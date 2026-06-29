@@ -9,6 +9,7 @@ from .advice import build_advice
 from .binance import fetch_market_data
 from .config import load_position, load_preference
 from .indicators import compute_indicators
+from .macro_events import build_macro_brief
 from .render import render_report
 
 
@@ -26,7 +27,8 @@ def main() -> None:
     market = fetch_market_data("BTCUSDT")
     indicators = compute_indicators(market)
     advice = build_advice(position, preference, indicators)
-    html = render_report(generated_at, market, indicators, position, preference, advice, archive_name)
+    macro_brief = build_macro_brief(generated_at)
+    html = render_report(generated_at, market, indicators, position, preference, advice, macro_brief, archive_name)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     archive_path = REPORTS_DIR / archive_name
@@ -38,4 +40,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

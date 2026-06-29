@@ -9,6 +9,7 @@ from .advice import Advice
 from .binance import MarketData
 from .config import PositionConfig, PreferenceConfig
 from .indicators import Indicators
+from .macro_events import MacroBrief
 
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -37,12 +38,25 @@ def render_report(
     position: PositionConfig,
     preference: PreferenceConfig,
     advice: Advice,
+    macro_brief: MacroBrief,
     archive_name: str,
 ) -> str:
     generated_cn = generated_at.astimezone(CN_TZ)
-    warnings = indicators.warnings + [x for x in [position.source_warning, preference.source_warning] if x]
+    warnings = indicators.warnings + macro_brief.warnings + [x for x in [position.source_warning, preference.source_warning] if x]
     warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>数据源状态正常。</li>"
     actions_html = "".join(f"<li>{html.escape(item)}</li>" for item in advice.action_items)
+    if macro_brief.events:
+        macro_events_html = "".join(
+            "<li>"
+            f"<strong>{html.escape(event.scheduled_at.astimezone(CN_TZ).strftime('%m-%d %H:%M'))} 北京时间 · "
+            f"{html.escape(event.title)}</strong>"
+            f"<br><span class=\"small\">来源：<a href=\"{html.escape(event.url)}\">{html.escape(event.source)}</a> · "
+            f"影响：{html.escape(event.impact)} · {html.escape(event.btc_view)}</span>"
+            "</li>"
+            for event in macro_brief.events
+        )
+    else:
+        macro_events_html = "<li>未来24小时未识别到已接入日历中的高影响事件。</li>"
     points = chart_points(market)
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -185,6 +199,14 @@ def render_report(
       <p>{html.escape(advice.short_plan)}</p>
       <p><strong>失效条件：</strong>{html.escape(advice.invalidation)}</p>
       <p class="small">策略偏好：{html.escape(preference.style)}；单次加仓上限：账户权益的 {preference.max_single_add_pct * 100:.1f}%；总名义仓位上限：账户权益的 {preference.max_total_notional_pct * 100:.1f}%。</p>
+    </section>
+
+    <section>
+      <h2>未来24小时宏观事件</h2>
+      <p>{html.escape(macro_brief.summary)}</p>
+      <p><strong>BTC波动预测：</strong>{html.escape(macro_brief.forecast)}</p>
+      <p class="small">窗口：{macro_brief.window_start:%Y-%m-%d %H:%M} - {macro_brief.window_end:%Y-%m-%d %H:%M} 北京时间</p>
+      <ul>{macro_events_html}</ul>
     </section>
 
     <section>
