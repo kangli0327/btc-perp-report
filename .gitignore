@@ -4,3 +4,4 @@ site/
 *.log
 .env
 .github-token.txt
+API.txt
