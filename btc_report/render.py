@@ -149,6 +149,7 @@ def render_report(
 </head>
 <body>
   <header>
+    <div class="meta" id="nodeCountdown">下次节点刷新倒计时：--:--</div>
     <h1>BTC 永续合约 15分钟短线决策报告</h1>
     <div class="meta" id="liveHeaderMeta">页面生成时间：{generated_cn:%Y-%m-%d %H:%M} 北京时间 · 标的：{html.escape(market.symbol)} · 数据源：{html.escape(market.source)} · 归档：{html.escape(archive_name)}</div>
   </header>
@@ -283,6 +284,7 @@ def render_report(
       return Math.max(...candidates.filter(v => v < latest));
     }}
     let liveRefreshTimer = null;
+    let countdownTimer = null;
     let lastLiveBucket = '';
     function currentQuarterBucket() {{
       const now = new Date();
@@ -302,6 +304,31 @@ def render_report(
         next.setMinutes(nextMinute, 3, 0);
       }}
       return Math.max(next.getTime() - now.getTime(), 15000);
+    }}
+    function nextQuarterTime() {{
+      const now = new Date();
+      const next = new Date(now);
+      const nextMinute = Math.floor(now.getMinutes() / 15) * 15 + 15;
+      next.setSeconds(3, 0);
+      if (nextMinute >= 60) {{
+        next.setHours(next.getHours() + 1, 0, 3, 0);
+      }} else {{
+        next.setMinutes(nextMinute, 3, 0);
+      }}
+      return next;
+    }}
+    function updateCountdown() {{
+      const target = nextQuarterTime();
+      const diff = Math.max(target.getTime() - Date.now(), 0);
+      const minutes = Math.floor(diff / 60000);
+      const seconds = Math.floor((diff % 60000) / 1000);
+      const text = `下次节点刷新倒计时：${{String(minutes).padStart(2, '0')}}:${{String(seconds).padStart(2, '0')}} · 目标：${{target.toLocaleTimeString('zh-CN', {{ hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }})}}`;
+      setText('nodeCountdown', text);
+    }}
+    function startCountdown() {{
+      if (countdownTimer) clearInterval(countdownTimer);
+      updateCountdown();
+      countdownTimer = setInterval(updateCountdown, 1000);
     }}
     function scheduleNextQuarterRefresh() {{
       if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
@@ -365,16 +392,19 @@ def render_report(
       }}
     }}
     refreshLiveMarket('page-load');
+    startCountdown();
     scheduleNextQuarterRefresh();
     document.addEventListener('visibilitychange', () => {{
       if (document.visibilityState === 'visible' && currentQuarterBucket() !== lastLiveBucket) {{
         refreshLiveMarket('page-visible');
+        startCountdown();
         scheduleNextQuarterRefresh();
       }}
     }});
     window.addEventListener('focus', () => {{
       if (currentQuarterBucket() !== lastLiveBucket) {{
         refreshLiveMarket('window-focus');
+        startCountdown();
         scheduleNextQuarterRefresh();
       }}
     }});
