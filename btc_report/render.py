@@ -282,7 +282,35 @@ def render_report(
       if (positionConfig.liquidationPrice) candidates.push(positionConfig.liquidationPrice * 1.003);
       return Math.max(...candidates.filter(v => v < latest));
     }}
-    async function refreshLiveMarket() {{
+    let liveRefreshTimer = null;
+    let lastLiveBucket = '';
+    function currentQuarterBucket() {{
+      const now = new Date();
+      const quarter = Math.floor(now.getMinutes() / 15) * 15;
+      return `${{now.getFullYear()}}-${{now.getMonth() + 1}}-${{now.getDate()}} ${{
+        String(now.getHours()).padStart(2, '0')
+      }}:${{String(quarter).padStart(2, '0')}}`;
+    }}
+    function nextQuarterDelayMs() {{
+      const now = new Date();
+      const next = new Date(now);
+      const nextMinute = Math.floor(now.getMinutes() / 15) * 15 + 15;
+      next.setSeconds(3, 0);
+      if (nextMinute >= 60) {{
+        next.setHours(next.getHours() + 1, 0, 3, 0);
+      }} else {{
+        next.setMinutes(nextMinute, 3, 0);
+      }}
+      return Math.max(next.getTime() - now.getTime(), 15000);
+    }}
+    function scheduleNextQuarterRefresh() {{
+      if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+      liveRefreshTimer = setTimeout(async () => {{
+        await refreshLiveMarket('quarter-node');
+        scheduleNextQuarterRefresh();
+      }}, nextQuarterDelayMs());
+    }}
+    async function refreshLiveMarket(reason = 'manual') {{
       try {{
         const [c15r, c1hr, c4hr, fr, oi, mark] = await Promise.all([
           fetch('https://www.okx.com/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=96'),
@@ -326,15 +354,30 @@ def render_report(
         setText('liveLongPlan', `多头计划：只有在15分钟收盘站上 ${{fmtPrice(resistance)}}，或回踩 ${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 1.002)}} 后重新放量上行，才考虑做多；单次新增名义仓位不超过 ${{fmtPrice(addBudget)}} USDT。止损 ${{fmtPrice(longStop)}}，止盈分两档：${{fmtPrice(longTp1)}} / ${{fmtPrice(longTp2)}}。`);
         setText('liveShortPlan', `空头计划：已有空单 ${{positionConfig.shortQty}} BTC，开仓均价 ${{fmtPrice(positionConfig.shortEntry)}}。若价格反弹到 ${{fmtPrice(resistance * 0.998)}} - ${{fmtPrice(resistance * 1.002)}} 受阻，可继续持有；不建议在强平价附近继续加空。必须设置硬止损 ${{fmtPrice(shortStop)}}，第一止盈 ${{fmtPrice(shortTp1)}}，第二止盈 ${{fmtPrice(shortTp2)}}。若跌破 ${{fmtPrice(shortTp1)}} 后反抽不破，可把止损下移到开仓价 ${{fmtPrice(positionConfig.shortEntry)}} 附近。`);
         setText('liveInvalidation', `空头失效：15分钟收盘突破 ${{fmtPrice(resistance)}} 或触发止损 ${{fmtPrice(shortStop)}}；多头失效：15分钟收盘跌破 ${{fmtPrice(support)}} 或触发止损 ${{fmtPrice(longStop)}}。`);
-        setText('liveHeaderMeta', `浏览器实时刷新：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}} · 标的：BTCUSDT · 数据源：OKX 浏览器实时行情`);
+        const bucket = currentQuarterBucket();
+        lastLiveBucket = bucket;
+        setText('liveHeaderMeta', `节点刷新：${{bucket}} 北京时间 · 实时执行：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}} · 标的：BTCUSDT · 数据源：OKX 浏览器实时行情`);
         const status = document.getElementById('liveStatus');
-        if (status) status.innerHTML = `<li>浏览器已实时刷新 OKX 行情：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}}</li>`;
+        if (status) status.innerHTML = `<li>浏览器已按节点刷新 OKX 行情：${{bucket}} 北京时间；触发方式：${{reason}}</li>`;
       }} catch (error) {{
         const status = document.getElementById('liveStatus');
         if (status) status.innerHTML = `<li>浏览器实时行情刷新失败：${{String(error)}}</li>`;
       }}
     }}
-    refreshLiveMarket();
+    refreshLiveMarket('page-load');
+    scheduleNextQuarterRefresh();
+    document.addEventListener('visibilitychange', () => {{
+      if (document.visibilityState === 'visible' && currentQuarterBucket() !== lastLiveBucket) {{
+        refreshLiveMarket('page-visible');
+        scheduleNextQuarterRefresh();
+      }}
+    }});
+    window.addEventListener('focus', () => {{
+      if (currentQuarterBucket() !== lastLiveBucket) {{
+        refreshLiveMarket('window-focus');
+        scheduleNextQuarterRefresh();
+      }}
+    }});
   </script>
 </body>
 </html>
