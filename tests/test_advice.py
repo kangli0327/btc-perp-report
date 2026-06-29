@@ -25,6 +25,8 @@ class AdviceTest(unittest.TestCase):
         )
         indicators = Indicators(
             latest_price=65000,
+            change_15m_pct=0.3,
+            change_1h_pct=0.8,
             change_4h_pct=1.2,
             change_24h_pct=4.0,
             high_24h=66000,

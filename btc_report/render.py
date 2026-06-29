@@ -23,7 +23,7 @@ def fmt_pct(value: float | None) -> str:
 
 
 def chart_points(data: MarketData) -> str:
-    candles = data.klines_4h[-42:]
+    candles = (data.klines_15m or data.klines_1h or data.klines_4h)[-96:]
     if not candles:
         return "[]"
     values = [{"t": int(c["close_time"]), "p": round(c["close"], 2)} for c in candles]
@@ -49,7 +49,7 @@ def render_report(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BTC 永续合约 4小时决策报告</title>
+  <title>BTC 永续合约 15分钟短线决策报告</title>
   <style>
     :root {{
       color-scheme: light;
@@ -135,7 +135,7 @@ def render_report(
 </head>
 <body>
   <header>
-    <h1>BTC 永续合约 4小时决策报告</h1>
+    <h1>BTC 永续合约 15分钟短线决策报告</h1>
     <div class="meta">更新时间：{generated_cn:%Y-%m-%d %H:%M} 北京时间 · 标的：{html.escape(market.symbol)} · 数据源：{html.escape(market.source)} · 归档：{html.escape(archive_name)}</div>
   </header>
   <main>
@@ -152,6 +152,8 @@ def render_report(
       <h2>市场快照</h2>
       <div class="grid">
         <div class="tile span-4"><div class="label">最新标记价</div><div class="value">{fmt_price(indicators.latest_price)}</div></div>
+        <div class="tile span-4"><div class="label">15分钟涨跌</div><div class="value">{fmt_pct(indicators.change_15m_pct)}</div></div>
+        <div class="tile span-4"><div class="label">1小时涨跌</div><div class="value">{fmt_pct(indicators.change_1h_pct)}</div></div>
         <div class="tile span-4"><div class="label">4小时涨跌</div><div class="value">{fmt_pct(indicators.change_4h_pct)}</div></div>
         <div class="tile span-4"><div class="label">24小时涨跌</div><div class="value">{fmt_pct(indicators.change_24h_pct)}</div></div>
         <div class="tile span-4"><div class="label">24小时区间</div><div class="value">{fmt_price(indicators.low_24h)} / {fmt_price(indicators.high_24h)}</div></div>
@@ -161,9 +163,9 @@ def render_report(
     </section>
 
     <section>
-      <h2>4小时价格结构</h2>
-      <canvas id="priceChart" width="960" height="300" aria-label="BTC 4小时价格图"></canvas>
-      <p class="small">支撑：{fmt_price(indicators.support)} · 阻力：{fmt_price(indicators.resistance)} · 24小时波动：{fmt_pct(indicators.volatility_24h_pct)} · 成交量倍率：{indicators.volume_4h_ratio:.2f}x · 基差：{fmt_pct(indicators.basis_pct)}</p>
+      <h2>15分钟短线结构</h2>
+      <canvas id="priceChart" width="960" height="300" aria-label="BTC 15分钟价格图"></canvas>
+      <p class="small">短线支撑：{fmt_price(indicators.support)} · 短线阻力：{fmt_price(indicators.resistance)} · 15分钟波动：{fmt_pct(indicators.volatility_24h_pct)} · 成交量倍率：{indicators.volume_4h_ratio:.2f}x · 基差：{fmt_pct(indicators.basis_pct)}</p>
     </section>
 
     <section>

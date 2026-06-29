@@ -16,6 +16,7 @@ OKX_BASE_URL = "https://www.okx.com"
 class MarketData:
     symbol: str
     source: str
+    klines_15m: list[dict[str, float]]
     klines_4h: list[dict[str, float]]
     klines_1h: list[dict[str, float]]
     funding_rates: list[dict[str, float]]
@@ -60,6 +61,7 @@ def _parse_okx_kline(row: list[Any]) -> dict[str, float]:
 
 
 def _fetch_binance(symbol: str) -> MarketData:
+    klines_15m_raw = _get_json(BINANCE_BASE_URL, "/fapi/v1/klines", {"symbol": symbol, "interval": "15m", "limit": 192})
     klines_4h_raw = _get_json(BINANCE_BASE_URL, "/fapi/v1/klines", {"symbol": symbol, "interval": "4h", "limit": 120})
     klines_1h_raw = _get_json(BINANCE_BASE_URL, "/fapi/v1/klines", {"symbol": symbol, "interval": "1h", "limit": 96})
     funding_raw = _get_json(BINANCE_BASE_URL, "/fapi/v1/fundingRate", {"symbol": symbol, "limit": 30})
@@ -69,6 +71,7 @@ def _fetch_binance(symbol: str) -> MarketData:
     return MarketData(
         symbol=symbol,
         source="Binance USD-M Futures",
+        klines_15m=[_parse_binance_kline(row) for row in klines_15m_raw if isinstance(row, list) and len(row) >= 8],
         klines_4h=[_parse_binance_kline(row) for row in klines_4h_raw if isinstance(row, list) and len(row) >= 8],
         klines_1h=[_parse_binance_kline(row) for row in klines_1h_raw if isinstance(row, list) and len(row) >= 8],
         funding_rates=[
@@ -92,6 +95,7 @@ def _okx_data(path: str, params: dict[str, Any]) -> Any:
 
 def _fetch_okx(symbol: str, prior_warning: str) -> MarketData:
     inst_id = "BTC-USDT-SWAP"
+    klines_15m_raw = _okx_data("/api/v5/market/candles", {"instId": inst_id, "bar": "15m", "limit": 192})
     klines_4h_raw = _okx_data("/api/v5/market/candles", {"instId": inst_id, "bar": "4H", "limit": 120})
     klines_1h_raw = _okx_data("/api/v5/market/candles", {"instId": inst_id, "bar": "1H", "limit": 96})
     funding_raw = _okx_data("/api/v5/public/funding-rate", {"instId": inst_id})
@@ -99,6 +103,7 @@ def _fetch_okx(symbol: str, prior_warning: str) -> MarketData:
     mark_raw = _okx_data("/api/v5/public/mark-price", {"instType": "SWAP", "instId": inst_id})
     ticker_raw = _okx_data("/api/v5/market/ticker", {"instId": inst_id})
 
+    klines_15m = [_parse_okx_kline(row) for row in reversed(klines_15m_raw) if isinstance(row, list) and len(row) >= 8]
     klines_4h = [_parse_okx_kline(row) for row in reversed(klines_4h_raw) if isinstance(row, list) and len(row) >= 8]
     klines_1h = [_parse_okx_kline(row) for row in reversed(klines_1h_raw) if isinstance(row, list) and len(row) >= 8]
     funding_rates = [
@@ -113,6 +118,7 @@ def _fetch_okx(symbol: str, prior_warning: str) -> MarketData:
     return MarketData(
         symbol=symbol,
         source="OKX BTC-USDT-SWAP fallback",
+        klines_15m=klines_15m,
         klines_4h=klines_4h,
         klines_1h=klines_1h,
         funding_rates=funding_rates,

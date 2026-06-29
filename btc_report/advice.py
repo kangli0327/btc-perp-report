@@ -90,9 +90,10 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
 
     actions: list[str] = []
     long_entry = ind.support
+    long_trigger = max(ind.resistance, ind.latest_price * 1.002)
     long_stop = _nearest_stop_for_long(position, ind)
-    long_tp1 = max(ind.latest_price * 1.012, (ind.support + ind.resistance) / 2)
-    long_tp2 = ind.resistance
+    long_tp1 = long_trigger * 1.006
+    long_tp2 = long_trigger * 1.014
     short_entry = ind.resistance
     short_stop = _nearest_stop_for_short(position, ind)
     short_tp1 = min(ind.latest_price * 0.988, (ind.support + ind.resistance) / 2)
@@ -100,7 +101,7 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
 
     if pref.allow_long:
         long_plan = (
-            f"多头计划：只有在4小时收盘站上 {_price(ind.resistance)}，或回踩 {_band(long_entry, 0.002)} "
+            f"多头计划：只有在15分钟收盘站上 {_price(ind.resistance)}，或回踩 {_band(long_entry, 0.002)} "
             f"后重新放量上行，才考虑做多；单次新增名义仓位不超过 {_money(add_budget)}。"
             f"止损 {_price(long_stop)}，止盈分两档：{_price(long_tp1)} / {_price(long_tp2)}。"
         )
@@ -120,7 +121,7 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
             actions.append(f"第一减仓/止盈观察：{_price(short_tp1)}；若成交放大跌破，再看 {_price(short_tp2)}。")
         else:
             short_plan = (
-                f"空头计划：只有反弹到 {_band(short_entry, 0.002)} 受阻，或4小时收盘跌破 {_price(ind.support)}，才考虑开空；"
+                f"空头计划：只有反弹到 {_band(short_entry, 0.002)} 受阻，或15分钟收盘跌破 {_price(ind.support)}，才考虑开空；"
                 f"单次新增名义仓位不超过 {_money(add_budget)}。止损 {_price(short_stop)}，止盈 { _price(short_tp1)} / {_price(short_tp2)}。"
             )
     else:
@@ -136,8 +137,8 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
         actions.append("当前没有高质量触发点，等待下一根4小时K线确认。")
 
     invalidation = (
-        f"空头失效：4小时收盘突破 {_price(ind.resistance)} 或触发止损 {_price(short_stop)}；"
-        f"多头失效：4小时收盘跌破 {_price(ind.support)} 或触发止损 {_price(long_stop)}。"
+        f"空头失效：15分钟收盘突破 {_price(ind.resistance)} 或触发止损 {_price(short_stop)}；"
+        f"多头失效：15分钟收盘跌破 {_price(ind.support)} 或触发止损 {_price(long_stop)}。"
     )
     position_summary = (
         f"账户权益 {_money(position.account_equity_usdt)}；可用保证金 {_money(position.available_margin_usdt)}；"
