@@ -136,7 +136,7 @@ def render_report(
 <body>
   <header>
     <h1>BTC 永续合约 4小时决策报告</h1>
-    <div class="meta">更新时间：{generated_cn:%Y-%m-%d %H:%M} 北京时间 · 标的：{html.escape(market.symbol)} · 归档：{html.escape(archive_name)}</div>
+    <div class="meta">更新时间：{generated_cn:%Y-%m-%d %H:%M} 北京时间 · 标的：{html.escape(market.symbol)} · 数据源：{html.escape(market.source)} · 归档：{html.escape(archive_name)}</div>
   </header>
   <main>
     <section class="hero">
@@ -172,6 +172,8 @@ def render_report(
       <div class="grid">
         <div class="tile span-6"><div class="label">多头</div><div class="value">{position.long.quantity_btc:g} BTC @ {fmt_price(position.long.entry_price)}</div><div class="small">杠杆 {position.long.leverage:g}x · 止损 {fmt_price(position.long.stop_loss)} · 止盈 {fmt_price(position.long.take_profit)}</div></div>
         <div class="tile span-6"><div class="label">空头</div><div class="value">{position.short.quantity_btc:g} BTC @ {fmt_price(position.short.entry_price)}</div><div class="small">杠杆 {position.short.leverage:g}x · 止损 {fmt_price(position.short.stop_loss)} · 止盈 {fmt_price(position.short.take_profit)}</div></div>
+        <div class="tile span-6"><div class="label">预估强平价</div><div class="value">{fmt_price(position.liquidation_price)}</div></div>
+        <div class="tile span-6"><div class="label">当前仓位保证金</div><div class="value">{fmt_price(position.initial_margin_usdt)} USDT</div></div>
       </div>
     </section>
 
@@ -228,4 +230,3 @@ def render_report(
 </body>
 </html>
 """
-

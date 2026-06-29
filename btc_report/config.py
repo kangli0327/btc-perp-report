@@ -25,6 +25,8 @@ class PositionConfig:
     available_margin_usdt: float
     long: PositionSide
     short: PositionSide
+    liquidation_price: float = 0.0
+    initial_margin_usdt: float = 0.0
     notes: str = ""
     source_warning: str = ""
 
@@ -73,6 +75,8 @@ def load_position() -> PositionConfig:
         available_margin_usdt=float(data.get("available_margin_usdt", 0) or 0),
         long=_side(data.get("long", {}) if isinstance(data.get("long", {}), dict) else {}),
         short=_side(data.get("short", {}) if isinstance(data.get("short", {}), dict) else {}),
+        liquidation_price=float(data.get("liquidation_price", 0) or 0),
+        initial_margin_usdt=float(data.get("initial_margin_usdt", 0) or 0),
         notes=str(data.get("notes", "")),
         source_warning=warning,
     )
@@ -92,4 +96,3 @@ def load_preference() -> PreferenceConfig:
         notes=str(data.get("notes", "")),
         source_warning=warning,
     )
-

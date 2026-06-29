@@ -45,7 +45,8 @@ class AdviceTest(unittest.TestCase):
         advice = build_advice(position, pref, indicators)
 
         self.assertEqual(advice.bias, "偏多")
-        self.assertIn("加多", advice.long_plan)
+        self.assertIn("止损", advice.long_plan)
+        self.assertIn("止盈", advice.long_plan)
         self.assertTrue(advice.action_items)
 
 
