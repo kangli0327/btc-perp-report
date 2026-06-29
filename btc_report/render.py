@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import html
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from .advice import Advice
+from .binance import MarketData
+from .config import PositionConfig, PreferenceConfig
+from .indicators import Indicators
+
+
+CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def fmt_price(value: float | None) -> str:
+    return "-" if value is None else f"{value:,.1f}"
+
+
+def fmt_pct(value: float | None) -> str:
+    return "-" if value is None else f"{value:+.2f}%"
+
+
+def chart_points(data: MarketData) -> str:
+    candles = data.klines_4h[-42:]
+    if not candles:
+        return "[]"
+    values = [{"t": int(c["close_time"]), "p": round(c["close"], 2)} for c in candles]
+    return json.dumps(values, ensure_ascii=False)
+
+
+def render_report(
+    generated_at: datetime,
+    market: MarketData,
+    indicators: Indicators,
+    position: PositionConfig,
+    preference: PreferenceConfig,
+    advice: Advice,
+    archive_name: str,
+) -> str:
+    generated_cn = generated_at.astimezone(CN_TZ)
+    warnings = indicators.warnings + [x for x in [position.source_warning, preference.source_warning] if x]
+    warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>数据源状态正常。</li>"
+    actions_html = "".join(f"<li>{html.escape(item)}</li>" for item in advice.action_items)
+    points = chart_points(market)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BTC 永续合约 4小时决策报告</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #667085;
+      --line: #d9dee7;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --accent: #0f766e;
+      --warn: #b45309;
+      --danger: #b42318;
+      --good: #047857;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }}
+    header {{
+      background: #102a43;
+      color: #fff;
+      padding: 22px 16px 18px;
+    }}
+    main {{
+      width: min(1040px, 100%);
+      margin: 0 auto;
+      padding: 14px;
+    }}
+    h1 {{ margin: 0 0 8px; font-size: clamp(24px, 6vw, 40px); line-height: 1.08; }}
+    h2 {{ margin: 0 0 12px; font-size: 18px; }}
+    .meta {{ color: #d7e4f2; font-size: 14px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }}
+    section, .tile {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }}
+    section {{ margin-bottom: 12px; }}
+    .span-12 {{ grid-column: span 12; }}
+    .span-6 {{ grid-column: span 6; }}
+    .span-4 {{ grid-column: span 4; }}
+    .hero {{
+      border-left: 5px solid var(--accent);
+    }}
+    .headline {{ font-size: 23px; font-weight: 760; margin: 0 0 10px; }}
+    .pill {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border-radius: 999px;
+      padding: 3px 10px;
+      background: #e8f3f1;
+      color: #0b635d;
+      font-weight: 700;
+      font-size: 13px;
+      margin: 0 6px 6px 0;
+      white-space: nowrap;
+    }}
+    .risk-high {{ background: #fee4e2; color: var(--danger); }}
+    .risk-mid {{ background: #fef0c7; color: var(--warn); }}
+    .risk-low {{ background: #dcfae6; color: var(--good); }}
+    .label {{ color: var(--muted); font-size: 13px; margin-bottom: 3px; }}
+    .value {{ font-size: 21px; font-weight: 760; overflow-wrap: anywhere; }}
+    ul {{ padding-left: 20px; margin: 8px 0 0; }}
+    li {{ margin: 6px 0; }}
+    canvas {{ width: 100%; height: 260px; display: block; }}
+    .small {{ color: var(--muted); font-size: 13px; }}
+    .plan {{ border-left: 4px solid #475467; }}
+    footer {{ padding: 18px 14px 30px; color: var(--muted); text-align: center; font-size: 13px; }}
+    @media (max-width: 720px) {{
+      main {{ padding: 10px; }}
+      .grid {{ gap: 10px; }}
+      .span-6, .span-4 {{ grid-column: span 12; }}
+      section, .tile {{ padding: 12px; }}
+      .headline {{ font-size: 20px; }}
+      canvas {{ height: 220px; }}
+    }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BTC 永续合约 4小时决策报告</h1>
+    <div class="meta">更新时间：{generated_cn:%Y-%m-%d %H:%M} 北京时间 · 标的：{html.escape(market.symbol)} · 归档：{html.escape(archive_name)}</div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="headline">{html.escape(advice.headline)}</div>
+      <span class="pill">方向：{html.escape(advice.bias)}</span>
+      <span class="pill {'risk-high' if indicators.risk_level == '高' else 'risk-mid' if indicators.risk_level == '中' else 'risk-low'}">风险：{html.escape(indicators.risk_level)}</span>
+      <span class="pill">趋势：{html.escape(indicators.trend)}</span>
+      <p>{html.escape(advice.risk_summary)}</p>
+      <ul>{actions_html}</ul>
+    </section>
+
+    <section>
+      <h2>市场快照</h2>
+      <div class="grid">
+        <div class="tile span-4"><div class="label">最新标记价</div><div class="value">{fmt_price(indicators.latest_price)}</div></div>
+        <div class="tile span-4"><div class="label">4小时涨跌</div><div class="value">{fmt_pct(indicators.change_4h_pct)}</div></div>
+        <div class="tile span-4"><div class="label">24小时涨跌</div><div class="value">{fmt_pct(indicators.change_24h_pct)}</div></div>
+        <div class="tile span-4"><div class="label">24小时区间</div><div class="value">{fmt_price(indicators.low_24h)} / {fmt_price(indicators.high_24h)}</div></div>
+        <div class="tile span-4"><div class="label">资金费率</div><div class="value">{fmt_pct(indicators.funding_rate_pct)}</div></div>
+        <div class="tile span-4"><div class="label">持仓量 BTC</div><div class="value">{fmt_price(indicators.open_interest)}</div></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>4小时价格结构</h2>
+      <canvas id="priceChart" width="960" height="300" aria-label="BTC 4小时价格图"></canvas>
+      <p class="small">支撑：{fmt_price(indicators.support)} · 阻力：{fmt_price(indicators.resistance)} · 24小时波动：{fmt_pct(indicators.volatility_24h_pct)} · 成交量倍率：{indicators.volume_4h_ratio:.2f}x · 基差：{fmt_pct(indicators.basis_pct)}</p>
+    </section>
+
+    <section>
+      <h2>当前仓位</h2>
+      <p>{html.escape(advice.position_summary)}</p>
+      <div class="grid">
+        <div class="tile span-6"><div class="label">多头</div><div class="value">{position.long.quantity_btc:g} BTC @ {fmt_price(position.long.entry_price)}</div><div class="small">杠杆 {position.long.leverage:g}x · 止损 {fmt_price(position.long.stop_loss)} · 止盈 {fmt_price(position.long.take_profit)}</div></div>
+        <div class="tile span-6"><div class="label">空头</div><div class="value">{position.short.quantity_btc:g} BTC @ {fmt_price(position.short.entry_price)}</div><div class="small">杠杆 {position.short.leverage:g}x · 止损 {fmt_price(position.short.stop_loss)} · 止盈 {fmt_price(position.short.take_profit)}</div></div>
+      </div>
+    </section>
+
+    <section class="plan">
+      <h2>后续操作计划</h2>
+      <p>{html.escape(advice.long_plan)}</p>
+      <p>{html.escape(advice.short_plan)}</p>
+      <p><strong>失效条件：</strong>{html.escape(advice.invalidation)}</p>
+      <p class="small">策略偏好：{html.escape(preference.style)}；单次加仓上限：账户权益的 {preference.max_single_add_pct * 100:.1f}%；总名义仓位上限：账户权益的 {preference.max_total_notional_pct * 100:.1f}%。</p>
+    </section>
+
+    <section>
+      <h2>运行状态</h2>
+      <ul>{warning_html}</ul>
+      <p class="small">本网页仅作投资决策辅助，不自动交易，不构成收益承诺。</p>
+    </section>
+  </main>
+  <footer>Generated by GitHub Actions · BTC-USDT Perpetual Futures Report</footer>
+  <script>
+    const points = {points};
+    const canvas = document.getElementById('priceChart');
+    const ctx = canvas.getContext('2d');
+    function drawChart() {{
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = '#d9dee7';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {{
+        const y = 20 + i * ((h - 44) / 4);
+        ctx.beginPath(); ctx.moveTo(48, y); ctx.lineTo(w - 12, y); ctx.stroke();
+      }}
+      if (!points.length) {{
+        ctx.fillStyle = '#667085'; ctx.font = '18px sans-serif'; ctx.fillText('暂无价格数据', 48, 80); return;
+      }}
+      const prices = points.map(p => p.p);
+      const min = Math.min(...prices), max = Math.max(...prices);
+      const pad = Math.max((max - min) * 0.08, 1);
+      const lo = min - pad, hi = max + pad;
+      const x = i => 48 + i * ((w - 68) / Math.max(points.length - 1, 1));
+      const y = p => 20 + (hi - p) * ((h - 44) / (hi - lo));
+      ctx.strokeStyle = '#0f766e'; ctx.lineWidth = 3; ctx.beginPath();
+      points.forEach((p, i) => {{ if (i === 0) ctx.moveTo(x(i), y(p.p)); else ctx.lineTo(x(i), y(p.p)); }});
+      ctx.stroke();
+      ctx.fillStyle = '#17202a'; ctx.font = '15px sans-serif';
+      ctx.fillText(hi.toFixed(0), 4, 28);
+      ctx.fillText(lo.toFixed(0), 4, h - 18);
+      ctx.fillStyle = '#0f766e';
+      ctx.beginPath(); ctx.arc(x(points.length - 1), y(points[points.length - 1].p), 5, 0, Math.PI * 2); ctx.fill();
+    }}
+    drawChart();
+  </script>
+</body>
+</html>
+"""
+

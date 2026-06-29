@@ -1,0 +1,20 @@
+{
+  "account_equity_usdt": 10000,
+  "available_margin_usdt": 6000,
+  "long": {
+    "quantity_btc": 0.12,
+    "entry_price": 62000,
+    "leverage": 5,
+    "stop_loss": 59000,
+    "take_profit": 69000
+  },
+  "short": {
+    "quantity_btc": 0.04,
+    "entry_price": 66500,
+    "leverage": 3,
+    "stop_loss": 69000,
+    "take_profit": 61000
+  },
+  "notes": "示例数据，请改为你的真实仓位后放入 GitHub Secrets。"
+}
+

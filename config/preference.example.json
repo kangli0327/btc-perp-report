@@ -1,0 +1,12 @@
+{
+  "style": "aggressive_trend_following",
+  "max_total_notional_pct": 1.8,
+  "max_single_add_pct": 0.35,
+  "max_drawdown_pct": 0.18,
+  "risk_per_trade_pct": 0.03,
+  "allow_long": true,
+  "allow_short": true,
+  "preferred_timeframe": "4h",
+  "notes": "激进趋势跟随：顺势加仓，必须保留失效条件。"
+}
+
