@@ -72,15 +72,41 @@ def upload_tree(owner: str, repo: str) -> str:
     return tree_data["sha"]
 
 
+def content_sha(owner: str, repo: str, rel: str) -> str | None:
+    quoted_path = urllib.parse.quote(rel.replace("\\", "/"), safe="/")
+    try:
+        data = api("GET", f"/repos/{owner}/{repo}/contents/{quoted_path}?ref=main")
+        return data.get("sha")
+    except RuntimeError as exc:
+        if "404" in str(exc) or "409" in str(exc):
+            return None
+        raise
+
+
+def publish_contents(owner: str, repo: str) -> None:
+    for rel in tracked_files():
+        raw = (ROOT / rel).read_bytes()
+        path = urllib.parse.quote(rel.replace("\\", "/"), safe="/")
+        payload = {
+            "message": f"Publish {rel}",
+            "content": base64.b64encode(raw).decode("ascii"),
+            "branch": "main",
+        }
+        sha = content_sha(owner, repo, rel)
+        if sha:
+            payload["sha"] = sha
+        api("PUT", f"/repos/{owner}/{repo}/contents/{path}", payload)
+
+
 def publish_commit(owner: str, repo: str) -> None:
     head = current_head(owner, repo)
+    if not head:
+        publish_contents(owner, repo)
+        return
     tree_sha = upload_tree(owner, repo)
-    payload = {"message": "Publish BTC perpetual report site", "tree": tree_sha, "parents": [head] if head else []}
+    payload = {"message": "Publish BTC perpetual report site", "tree": tree_sha, "parents": [head]}
     commit = api("POST", f"/repos/{owner}/{repo}/git/commits", payload)
-    if head:
-        api("PATCH", f"/repos/{owner}/{repo}/git/refs/heads/main", {"sha": commit["sha"], "force": True})
-    else:
-        api("POST", f"/repos/{owner}/{repo}/git/refs", {"ref": "refs/heads/main", "sha": commit["sha"]})
+    api("PATCH", f"/repos/{owner}/{repo}/git/refs/heads/main", {"sha": commit["sha"], "force": True})
 
 
 def put_secret(owner: str, repo: str, name: str, value: str) -> None:
