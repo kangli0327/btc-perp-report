@@ -145,8 +145,6 @@ def main() -> None:
             },
         )
     publish_commit(owner, repo)
-    put_secret(owner, repo, "POSITION_CONFIG_JSON", (ROOT / "config" / "position.example.json").read_text(encoding="utf-8"))
-    put_secret(owner, repo, "PREFERENCE_CONFIG_JSON", (ROOT / "config" / "preference.example.json").read_text(encoding="utf-8"))
     enable_pages(owner, repo)
     print(json.dumps({"repo": f"https://github.com/{owner}/{repo}", "pages": f"https://{owner}.github.io/{repo}/"}, ensure_ascii=False, indent=2))
 
