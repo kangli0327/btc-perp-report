@@ -326,7 +326,7 @@ def render_report(
         setText('liveLongPlan', `多头计划：只有在15分钟收盘站上 ${{fmtPrice(resistance)}}，或回踩 ${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 1.002)}} 后重新放量上行，才考虑做多；单次新增名义仓位不超过 ${{fmtPrice(addBudget)}} USDT。止损 ${{fmtPrice(longStop)}}，止盈分两档：${{fmtPrice(longTp1)}} / ${{fmtPrice(longTp2)}}。`);
         setText('liveShortPlan', `空头计划：已有空单 ${{positionConfig.shortQty}} BTC，开仓均价 ${{fmtPrice(positionConfig.shortEntry)}}。若价格反弹到 ${{fmtPrice(resistance * 0.998)}} - ${{fmtPrice(resistance * 1.002)}} 受阻，可继续持有；不建议在强平价附近继续加空。必须设置硬止损 ${{fmtPrice(shortStop)}}，第一止盈 ${{fmtPrice(shortTp1)}}，第二止盈 ${{fmtPrice(shortTp2)}}。若跌破 ${{fmtPrice(shortTp1)}} 后反抽不破，可把止损下移到开仓价 ${{fmtPrice(positionConfig.shortEntry)}} 附近。`);
         setText('liveInvalidation', `空头失效：15分钟收盘突破 ${{fmtPrice(resistance)}} 或触发止损 ${{fmtPrice(shortStop)}}；多头失效：15分钟收盘跌破 ${{fmtPrice(support)}} 或触发止损 ${{fmtPrice(longStop)}}。`);
-        setText('liveHeaderMeta', `浏览器实时刷新：${{new Date().toLocaleString('zh-CN', {{ hour12: false })}}} · 标的：BTCUSDT · 数据源：OKX 浏览器实时行情`);
+        setText('liveHeaderMeta', `浏览器实时刷新：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}} · 标的：BTCUSDT · 数据源：OKX 浏览器实时行情`);
         const status = document.getElementById('liveStatus');
         if (status) status.innerHTML = `<li>浏览器已实时刷新 OKX 行情：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}}</li>`;
       }} catch (error) {{
