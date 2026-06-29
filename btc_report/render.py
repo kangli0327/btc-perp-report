@@ -15,6 +15,10 @@ from .macro_events import MacroBrief
 CN_TZ = ZoneInfo("Asia/Shanghai")
 
 
+def fmt_dt(value: datetime) -> str:
+    return value.astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def fmt_price(value: float | None) -> str:
     return "-" if value is None else f"{value:,.1f}"
 
@@ -150,7 +154,7 @@ def render_report(
 <body>
   <header>
     <h1>BTC 永续合约 15分钟短线决策报告</h1>
-    <div class="meta" id="liveHeaderMeta">正在从 OKX 获取最新行情 · 页面模板生成：{generated_cn:%Y-%m-%d %H:%M} 北京时间</div>
+    <div class="meta" id="liveHeaderMeta">正在从 OKX 获取最新行情 · 页面模板生成：{fmt_dt(generated_cn)} 北京时间</div>
   </header>
   <main>
     <section class="hero">
@@ -264,6 +268,10 @@ def render_report(
     drawChart();
     const fmtPrice = value => Number.isFinite(value) ? value.toLocaleString('en-US', {{ minimumFractionDigits: 1, maximumFractionDigits: 1 }}) : '-';
     const fmtPctJs = value => Number.isFinite(value) ? `${{value >= 0 ? '+' : ''}}${{value.toFixed(2)}}%` : '-';
+    const fmtDateTime = value => {{
+      const pad = number => String(number).padStart(2, '0');
+      return `${{value.getFullYear()}}-${{pad(value.getMonth() + 1)}}-${{pad(value.getDate())}} ${{pad(value.getHours())}}:${{pad(value.getMinutes())}}:${{pad(value.getSeconds())}}`;
+    }};
     const pct = (a, b) => b ? (a / b - 1) * 100 : 0;
     const setText = (id, text) => {{ const el = document.getElementById(id); if (el) el.textContent = text; }};
     function parseOkxCandles(rows) {{
@@ -326,7 +334,7 @@ def render_report(
         setText('liveLongPlan', `多头计划：只有在15分钟收盘站上 ${{fmtPrice(resistance)}}，或回踩 ${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 1.002)}} 后重新放量上行，才考虑做多；单次新增名义仓位不超过 ${{fmtPrice(addBudget)}} USDT。止损 ${{fmtPrice(longStop)}}，止盈分两档：${{fmtPrice(longTp1)}} / ${{fmtPrice(longTp2)}}。`);
         setText('liveShortPlan', `空头计划：已有空单 ${{positionConfig.shortQty}} BTC，开仓均价 ${{fmtPrice(positionConfig.shortEntry)}}。若价格反弹到 ${{fmtPrice(resistance * 0.998)}} - ${{fmtPrice(resistance * 1.002)}} 受阻，可继续持有；不建议在强平价附近继续加空。必须设置硬止损 ${{fmtPrice(shortStop)}}，第一止盈 ${{fmtPrice(shortTp1)}}，第二止盈 ${{fmtPrice(shortTp2)}}。若跌破 ${{fmtPrice(shortTp1)}} 后反抽不破，可把止损下移到开仓价 ${{fmtPrice(positionConfig.shortEntry)}} 附近。`);
         setText('liveInvalidation', `空头失效：15分钟收盘突破 ${{fmtPrice(resistance)}} 或触发止损 ${{fmtPrice(shortStop)}}；多头失效：15分钟收盘跌破 ${{fmtPrice(support)}} 或触发止损 ${{fmtPrice(longStop)}}。`);
-        setText('liveHeaderMeta', `本次刷新：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}} · 标的：BTCUSDT · 数据源：OKX 浏览器现场抓取`);
+        setText('liveHeaderMeta', `本次刷新：${{fmtDateTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：OKX 浏览器现场抓取`);
         const status = document.getElementById('liveStatus');
         if (status) status.innerHTML = `<li>本次页面刷新已现场获取 OKX 行情；触发方式：${{reason}}</li>`;
       }} catch (error) {{
