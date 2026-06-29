@@ -149,9 +149,8 @@ def render_report(
 </head>
 <body>
   <header>
-    <div class="meta" id="nodeCountdown">下次节点刷新倒计时：--:--</div>
     <h1>BTC 永续合约 15分钟短线决策报告</h1>
-    <div class="meta" id="liveHeaderMeta">页面生成时间：{generated_cn:%Y-%m-%d %H:%M} 北京时间 · 标的：{html.escape(market.symbol)} · 数据源：{html.escape(market.source)} · 归档：{html.escape(archive_name)}</div>
+    <div class="meta" id="liveHeaderMeta">正在从 OKX 获取最新行情 · 页面模板生成：{generated_cn:%Y-%m-%d %H:%M} 北京时间</div>
   </header>
   <main>
     <section class="hero">
@@ -283,60 +282,6 @@ def render_report(
       if (positionConfig.liquidationPrice) candidates.push(positionConfig.liquidationPrice * 1.003);
       return Math.max(...candidates.filter(v => v < latest));
     }}
-    let liveRefreshTimer = null;
-    let countdownTimer = null;
-    let lastLiveBucket = '';
-    function currentQuarterBucket() {{
-      const now = new Date();
-      const quarter = Math.floor(now.getMinutes() / 15) * 15;
-      return `${{now.getFullYear()}}-${{now.getMonth() + 1}}-${{now.getDate()}} ${{
-        String(now.getHours()).padStart(2, '0')
-      }}:${{String(quarter).padStart(2, '0')}}`;
-    }}
-    function nextQuarterDelayMs() {{
-      const now = new Date();
-      const next = new Date(now);
-      const nextMinute = Math.floor(now.getMinutes() / 15) * 15 + 15;
-      next.setSeconds(3, 0);
-      if (nextMinute >= 60) {{
-        next.setHours(next.getHours() + 1, 0, 3, 0);
-      }} else {{
-        next.setMinutes(nextMinute, 3, 0);
-      }}
-      return Math.max(next.getTime() - now.getTime(), 15000);
-    }}
-    function nextQuarterTime() {{
-      const now = new Date();
-      const next = new Date(now);
-      const nextMinute = Math.floor(now.getMinutes() / 15) * 15 + 15;
-      next.setSeconds(3, 0);
-      if (nextMinute >= 60) {{
-        next.setHours(next.getHours() + 1, 0, 3, 0);
-      }} else {{
-        next.setMinutes(nextMinute, 3, 0);
-      }}
-      return next;
-    }}
-    function updateCountdown() {{
-      const target = nextQuarterTime();
-      const diff = Math.max(target.getTime() - Date.now(), 0);
-      const minutes = Math.floor(diff / 60000);
-      const seconds = Math.floor((diff % 60000) / 1000);
-      const text = `下次节点刷新倒计时：${{String(minutes).padStart(2, '0')}}:${{String(seconds).padStart(2, '0')}} · 目标：${{target.toLocaleTimeString('zh-CN', {{ hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }})}}`;
-      setText('nodeCountdown', text);
-    }}
-    function startCountdown() {{
-      if (countdownTimer) clearInterval(countdownTimer);
-      updateCountdown();
-      countdownTimer = setInterval(updateCountdown, 1000);
-    }}
-    function scheduleNextQuarterRefresh() {{
-      if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
-      liveRefreshTimer = setTimeout(async () => {{
-        await refreshLiveMarket('quarter-node');
-        scheduleNextQuarterRefresh();
-      }}, nextQuarterDelayMs());
-    }}
     async function refreshLiveMarket(reason = 'manual') {{
       try {{
         const [c15r, c1hr, c4hr, fr, oi, mark] = await Promise.all([
@@ -381,32 +326,22 @@ def render_report(
         setText('liveLongPlan', `多头计划：只有在15分钟收盘站上 ${{fmtPrice(resistance)}}，或回踩 ${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 1.002)}} 后重新放量上行，才考虑做多；单次新增名义仓位不超过 ${{fmtPrice(addBudget)}} USDT。止损 ${{fmtPrice(longStop)}}，止盈分两档：${{fmtPrice(longTp1)}} / ${{fmtPrice(longTp2)}}。`);
         setText('liveShortPlan', `空头计划：已有空单 ${{positionConfig.shortQty}} BTC，开仓均价 ${{fmtPrice(positionConfig.shortEntry)}}。若价格反弹到 ${{fmtPrice(resistance * 0.998)}} - ${{fmtPrice(resistance * 1.002)}} 受阻，可继续持有；不建议在强平价附近继续加空。必须设置硬止损 ${{fmtPrice(shortStop)}}，第一止盈 ${{fmtPrice(shortTp1)}}，第二止盈 ${{fmtPrice(shortTp2)}}。若跌破 ${{fmtPrice(shortTp1)}} 后反抽不破，可把止损下移到开仓价 ${{fmtPrice(positionConfig.shortEntry)}} 附近。`);
         setText('liveInvalidation', `空头失效：15分钟收盘突破 ${{fmtPrice(resistance)}} 或触发止损 ${{fmtPrice(shortStop)}}；多头失效：15分钟收盘跌破 ${{fmtPrice(support)}} 或触发止损 ${{fmtPrice(longStop)}}。`);
-        const bucket = currentQuarterBucket();
-        lastLiveBucket = bucket;
-        setText('liveHeaderMeta', `节点刷新：${{bucket}} 北京时间 · 实时执行：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}} · 标的：BTCUSDT · 数据源：OKX 浏览器实时行情`);
+        setText('liveHeaderMeta', `本次刷新：${{new Date().toLocaleString('zh-CN', {{ hour12: false }})}} · 标的：BTCUSDT · 数据源：OKX 浏览器现场抓取`);
         const status = document.getElementById('liveStatus');
-        if (status) status.innerHTML = `<li>浏览器已按节点刷新 OKX 行情：${{bucket}} 北京时间；触发方式：${{reason}}</li>`;
+        if (status) status.innerHTML = `<li>本次页面刷新已现场获取 OKX 行情；触发方式：${{reason}}</li>`;
       }} catch (error) {{
         const status = document.getElementById('liveStatus');
         if (status) status.innerHTML = `<li>浏览器实时行情刷新失败：${{String(error)}}</li>`;
       }}
     }}
     refreshLiveMarket('page-load');
-    startCountdown();
-    scheduleNextQuarterRefresh();
     document.addEventListener('visibilitychange', () => {{
-      if (document.visibilityState === 'visible' && currentQuarterBucket() !== lastLiveBucket) {{
+      if (document.visibilityState === 'visible') {{
         refreshLiveMarket('page-visible');
-        startCountdown();
-        scheduleNextQuarterRefresh();
       }}
     }});
     window.addEventListener('focus', () => {{
-      if (currentQuarterBucket() !== lastLiveBucket) {{
-        refreshLiveMarket('window-focus');
-        startCountdown();
-        scheduleNextQuarterRefresh();
-      }}
+      refreshLiveMarket('window-focus');
     }});
   </script>
 </body>
