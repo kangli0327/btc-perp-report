@@ -154,9 +154,9 @@ def render_report(
 
     <section class="plan">
       <h2>后续操作计划</h2>
-      <p id="liveLongPlan">{html.escape(advice.long_plan)}</p>
-      <p id="liveShortPlan">{html.escape(advice.short_plan)}</p>
-      <p><strong>失效条件：</strong><span id="liveInvalidation">{html.escape(advice.invalidation)}</span></p>
+      <p><strong>当前点位：</strong><span id="simpleCurrentPoint">{fmt_price(indicators.latest_price)}</span></p>
+      <p><strong>止盈点位：</strong><span id="simpleTakeProfit">{fmt_price(indicators.latest_price * 0.988)} - {fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.965)} 分批止盈</span></p>
+      <p><strong>开仓建议：</strong><span id="simpleOpenAdvice">{fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.965)} 分批开多</span></p>
       <p class="small">策略偏好：{html.escape(preference.style)}；单次加仓上限：账户权益的 {preference.max_single_add_pct * 100:.1f}%；总名义仓位上限：账户权益的 {preference.max_total_notional_pct * 100:.1f}%。</p>
     </section>
 
@@ -211,13 +211,22 @@ def render_report(
     }};
     const pct = (a, b) => b ? (a / b - 1) * 100 : 0;
     const setText = (id, text) => {{ const el = document.getElementById(id); if (el) el.textContent = text; }};
-    const okxUrl = path => `https://www.okx.com${{path}}${{path.includes('?') ? '&' : '?'}}_=${{Date.now()}}`;
+    const okxHosts = ['https://openapi.okx.com', 'https://www.okx.com'];
+    const okxUrl = (host, path) => `${{host}}${{path}}${{path.includes('?') ? '&' : '?'}}_=${{Date.now()}}`;
     async function fetchJson(label, path) {{
-      const response = await fetch(okxUrl(path), {{ cache: 'no-store' }});
-      if (!response.ok) throw new Error(`${{label}} HTTP ${{response.status}}`);
-      const payload = await response.json();
-      if (payload.code && payload.code !== '0') throw new Error(`${{label}} code ${{payload.code}}: ${{payload.msg || ''}}`);
-      return payload;
+      const errors = [];
+      for (const host of okxHosts) {{
+        try {{
+          const response = await fetch(okxUrl(host, path), {{ cache: 'no-store' }});
+          if (!response.ok) throw new Error(`${{host}} HTTP ${{response.status}}`);
+          const payload = await response.json();
+          if (payload.code && payload.code !== '0') throw new Error(`${{host}} code ${{payload.code}}: ${{payload.msg || ''}}`);
+          return payload;
+        }} catch (error) {{
+          errors.push(`${{host}}: ${{String(error)}}`);
+        }}
+      }}
+      throw new Error(`${{label}} all OKX hosts failed: ${{errors.join(' | ')}}`);
     }}
     async function fetchJsonSoft(label, path) {{
       try {{
@@ -289,9 +298,9 @@ def render_report(
         setText('liveFunding', fmtPct(funding));
         setText('liveOpenInterest', fmtPrice(openInterest));
         setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：浏览器现场抓取`);
-        setText('liveLongPlan', `多头计划：只有在15分钟收盘站上 ${{fmtPrice(resistance)}}，或回踩 ${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 1.002)}} 后重新放量上行，才考虑做多；单次新增名义仓位不超过 ${{fmtPrice(addBudget)}} USDT。止损 ${{fmtPrice(longStop)}}，止盈分两档：${{fmtPrice(longTp1)}} / ${{fmtPrice(longTp2)}}。`);
-        setText('liveShortPlan', `空头计划：已有空单 ${{positionConfig.shortQty}} BTC，开仓均价 ${{fmtPrice(positionConfig.shortEntry)}}。若价格反弹到 ${{fmtPrice(resistance * 0.998)}} - ${{fmtPrice(resistance * 1.002)}} 受阻，可继续持有；不建议在强平价附近继续加空。必须设置硬止损 ${{fmtPrice(shortStop)}}，第一止盈 ${{fmtPrice(shortTp1)}}，第二止盈 ${{fmtPrice(shortTp2)}}。若跌破 ${{fmtPrice(shortTp1)}} 后反抽不破，可把止损下移到开仓价 ${{fmtPrice(positionConfig.shortEntry)}} 附近。`);
-        setText('liveInvalidation', `空头失效：15分钟收盘突破 ${{fmtPrice(resistance)}} 或触发止损 ${{fmtPrice(shortStop)}}；多头失效：15分钟收盘跌破 ${{fmtPrice(support)}} 或触发止损 ${{fmtPrice(longStop)}}。`);
+        setText('simpleCurrentPoint', fmtPrice(latest));
+        setText('simpleTakeProfit', `${{fmtPrice(shortTp1)}} - ${{fmtPrice(shortTp2)}} - ${{fmtPrice(shortTp2 * 0.965)}} 分批止盈`);
+        setText('simpleOpenAdvice', `${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 0.965)}} 分批开多`);
         setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：OKX 浏览器现场抓取`);
         const softWarnings = [fundingResult, oiResult].filter(item => !item.ok).map(item => `${{item.label}}失败：${{item.error}}`);
         setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}${{softWarnings.length ? ' · 部分数据缺失：' + softWarnings.join('；') : ''}}`);
