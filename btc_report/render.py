@@ -211,6 +211,16 @@ def render_report(
     }};
     const pct = (a, b) => b ? (a / b - 1) * 100 : 0;
     const setText = (id, text) => {{ const el = document.getElementById(id); if (el) el.textContent = text; }};
+    let liveSupport = {indicators.support};
+    let liveResistance = {indicators.resistance};
+    function updateSimplePlan(latest, support, resistance, source) {{
+      const shortTp1 = Math.min(latest * 0.988, (support + resistance) / 2);
+      const shortTp2 = support;
+      setText('simpleCurrentPoint', fmtPrice(latest));
+      setText('simpleTakeProfit', `${{fmtPrice(shortTp1)}} - ${{fmtPrice(shortTp2)}} - ${{fmtPrice(shortTp2 * 0.965)}} 分批止盈`);
+      setText('simpleOpenAdvice', `${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 0.965)}} 分批开多`);
+      setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
+    }}
     const okxHosts = ['https://openapi.okx.com', 'https://www.okx.com'];
     const okxUrl = (host, path) => `${{host}}${{path}}${{path.includes('?') ? '&' : '?'}}_=${{Date.now()}}`;
     async function fetchJson(label, path) {{
@@ -270,6 +280,8 @@ def render_report(
         const latest = Number((markRow && markRow.markPx) || (latestCandle && latestCandle.close) || 0);
         const support = Math.min(...c15.slice(-24).map(c => c.low));
         const resistance = Math.max(...c15.slice(-24).map(c => c.high));
+        liveSupport = support;
+        liveResistance = resistance;
         const fundingPayload = fundingResult.ok ? fundingResult.payload : {{}};
         const oiPayload = oiResult.ok ? oiResult.payload : {{}};
         const fundingRow = fundingPayload.data && fundingPayload.data.length ? fundingPayload.data[0] : null;
@@ -298,10 +310,7 @@ def render_report(
         setText('liveFunding', fmtPct(funding));
         setText('liveOpenInterest', fmtPrice(openInterest));
         setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：浏览器现场抓取`);
-        setText('simpleCurrentPoint', fmtPrice(latest));
-        setText('simpleTakeProfit', `${{fmtPrice(shortTp1)}} - ${{fmtPrice(shortTp2)}} - ${{fmtPrice(shortTp2 * 0.965)}} 分批止盈`);
-        setText('simpleOpenAdvice', `${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 0.965)}} 分批开多`);
-        setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：OKX 浏览器现场抓取`);
+        updateSimplePlan(latest, support, resistance, 'OKX REST现场抓取');
         const softWarnings = [fundingResult, oiResult].filter(item => !item.ok).map(item => `${{item.label}}失败：${{item.error}}`);
         setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}${{softWarnings.length ? ' · 部分数据缺失：' + softWarnings.join('；') : ''}}`);
         const status = document.getElementById('liveStatus');
@@ -312,7 +321,56 @@ def render_report(
         if (status) status.innerHTML = `<li>浏览器实时行情刷新失败：${{String(error)}}</li>`;
       }}
     }}
+    function startOkxWebSocket() {{
+      try {{
+        const ws = new WebSocket('wss://ws.okx.com:8443/ws/v5/public');
+        ws.onopen = () => {{
+          setText('liveFetchMeta', `实时抓取状态：WebSocket连接中 · ${{fmtTime(new Date())}}`);
+          ws.send(JSON.stringify({{
+            op: 'subscribe',
+            args: [
+              {{ channel: 'mark-price', instId: 'BTC-USDT-SWAP' }},
+              {{ channel: 'candle15m', instId: 'BTC-USDT-SWAP' }}
+            ]
+          }}));
+        }};
+        ws.onmessage = event => {{
+          try {{
+            const message = JSON.parse(event.data);
+            if (!message.data || !message.data.length) return;
+            const arg = message.arg || {{}};
+            const row = message.data[0];
+            if (arg.channel === 'mark-price') {{
+              const latest = Number(row.markPx || 0);
+              if (latest > 0) {{
+                setText('liveLatestPrice', fmtPrice(latest));
+                updateSimplePlan(latest, liveSupport, liveResistance, 'OKX WebSocket实时推送');
+                setText('liveFetchMeta', `实时抓取状态：WebSocket成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}`);
+              }}
+            }}
+            if (arg.channel === 'candle15m' && Array.isArray(row)) {{
+              const high = Number(row[2]);
+              const low = Number(row[3]);
+              const close = Number(row[4]);
+              if (Number.isFinite(high) && Number.isFinite(low)) {{
+                liveSupport = Math.min(liveSupport, low);
+                liveResistance = Math.max(liveResistance, high);
+                setText('liveStructure', `短线支撑：${{fmtPrice(liveSupport)}} · 短线阻力：${{fmtPrice(liveResistance)}} · 数据：OKX WebSocket实时推送`);
+                if (close > 0) updateSimplePlan(close, liveSupport, liveResistance, 'OKX WebSocket实时推送');
+              }}
+            }}
+          }} catch (error) {{
+            setText('liveFetchMeta', `实时抓取状态：WebSocket消息解析失败 · ${{String(error)}}`);
+          }}
+        }};
+        ws.onerror = () => setText('liveFetchMeta', `实时抓取状态：WebSocket失败，已保留REST结果 · ${{fmtTime(new Date())}}`);
+        ws.onclose = () => setTimeout(startOkxWebSocket, 5000);
+      }} catch (error) {{
+        setText('liveFetchMeta', `实时抓取状态：WebSocket启动失败 · ${{String(error)}}`);
+      }}
+    }}
     refreshLiveMarket('page-load');
+    startOkxWebSocket();
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshLiveMarket('page-visible'); }});
     window.addEventListener('focus', () => refreshLiveMarket('window-focus'));
   </script>
