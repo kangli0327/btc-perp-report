@@ -27,6 +27,10 @@ def fmt_pct(value: float | None) -> str:
     return "-" if value is None else f"{value:+.2f}%"
 
 
+def fmt_money(value: float | None) -> str:
+    return "-" if value is None else f"{value:+,.2f}"
+
+
 def chart_points(data: MarketData) -> str:
     candles = (data.klines_15m or data.klines_1h or data.klines_4h)[-96:]
     values = [{"t": int(c["close_time"]), "p": round(c["close"], 2)} for c in candles]
@@ -55,8 +59,38 @@ def render_report(
         for event in macro_brief.events
     ) or "<li>未来24小时未识别到已接入日历中的高影响事件。</li>"
 
+    has_short = position.short.quantity_btc > 0
+    has_long = position.long.quantity_btc > 0
+    active_side = "short" if has_short else "long" if has_long else "flat"
+    active_qty = position.short.quantity_btc if active_side == "short" else position.long.quantity_btc if active_side == "long" else 0.0
+    active_entry = position.short.entry_price if active_side == "short" else position.long.entry_price if active_side == "long" else 0.0
+    active_leverage = position.short.leverage if active_side == "short" else position.long.leverage if active_side == "long" else 1.0
+    latest_price = indicators.latest_price
+    if active_side == "short":
+        initial_pnl = (active_entry - latest_price) * active_qty
+    elif active_side == "long":
+        initial_pnl = (latest_price - active_entry) * active_qty
+    else:
+        initial_pnl = 0.0
+    initial_roi = initial_pnl / position.initial_margin_usdt * 100 if position.initial_margin_usdt else 0.0
+    initial_notional = active_qty * latest_price
+    maintenance_margin = max(initial_notional * 0.004, 1.0)
+    maintenance_ratio = (position.initial_margin_usdt + initial_pnl) / maintenance_margin * 100 if maintenance_margin else 0.0
+    if position.liquidation_price and active_side == "short":
+        liq_gap = (position.liquidation_price / latest_price - 1) * 100
+    elif position.liquidation_price and active_side == "long":
+        liq_gap = (1 - position.liquidation_price / latest_price) * 100
+    else:
+        liq_gap = 0.0
+    liq_state = "危险" if position.liquidation_price and liq_gap < 1.2 else "偏紧" if position.liquidation_price and liq_gap < 3 else "正常"
+
     position_json = json.dumps(
         {
+            "activeSide": active_side,
+            "activeQty": active_qty,
+            "activeEntry": active_entry,
+            "activeLeverage": active_leverage,
+            "initialMargin": position.initial_margin_usdt,
             "shortQty": position.short.quantity_btc,
             "shortEntry": position.short.entry_price,
             "shortStop": position.short.stop_loss,
@@ -98,12 +132,36 @@ def render_report(
     .risk-high {{ background:#fee4e2; color:var(--danger); }} .risk-mid {{ background:#fef0c7; color:var(--warn); }} .risk-low {{ background:#dcfae6; color:var(--good); }}
     .label {{ color:var(--muted); font-size:13px; margin-bottom:3px; }}
     .value {{ font-size:21px; font-weight:760; overflow-wrap:anywhere; }}
+    .position-card {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:12px; }}
+    .position-head {{ display:grid; grid-template-columns:1fr auto; gap:14px; align-items:start; margin-bottom:24px; }}
+    .contract-title {{ font-size:28px; line-height:1.1; font-weight:780; color:#0b0f14; white-space:nowrap; }}
+    .chevron {{ color:#98a2b3; font-weight:500; margin-left:4px; }}
+    .pos-badges {{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }}
+    .okx-badge {{ min-height:32px; border-radius:7px; padding:3px 10px; background:#f1f3f5; color:#20242a; font-size:21px; line-height:1.2; }}
+    .okx-badge.side-short {{ background:#ffd1e2; color:#87224d; }}
+    .okx-badge.side-long {{ background:#cdfae3; color:#05603a; }}
+    .signal-bars {{ display:inline-flex; gap:4px; align-items:center; height:32px; }}
+    .signal-bars span {{ width:4px; height:22px; border-radius:2px; background:#e5e7eb; }}
+    .signal-bars span:first-child {{ background:#2e7d32; }}
+    .pnl-box {{ text-align:right; min-width:156px; }}
+    .pnl-label {{ color:#8a8f98; font-size:22px; text-decoration:underline dashed #858b94 2px; text-underline-offset:6px; white-space:nowrap; }}
+    .pnl-value {{ margin-top:8px; font-size:27px; line-height:1.1; font-weight:780; color:#2e7d32; white-space:nowrap; }}
+    .pnl-value.loss {{ color:#b42318; }}
+    .position-grid {{ display:grid; grid-template-columns:repeat(3,1fr); column-gap:28px; row-gap:28px; }}
+    .okx-label {{ color:#8a8f98; font-size:22px; line-height:1.15; text-decoration:underline dashed #858b94 2px; text-underline-offset:6px; }}
+    .okx-value {{ margin-top:9px; font-size:27px; line-height:1.1; font-weight:520; color:#101318; overflow-wrap:anywhere; }}
+    .margin-inline {{ display:inline-flex; align-items:center; gap:8px; }}
+    .plus-dot {{ display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border:2px solid #111; border-radius:50%; font-size:20px; line-height:20px; font-weight:800; }}
+    .liq-note {{ margin-top:18px; padding:10px 12px; border-radius:8px; background:#f8fafc; color:#475467; font-size:14px; }}
+    .liq-note.danger {{ background:#fee4e2; color:#b42318; }}
+    .liq-note.warn {{ background:#fef0c7; color:#b45309; }}
     ul {{ padding-left:20px; margin:8px 0 0; }} li {{ margin:6px 0; }}
     canvas {{ width:100%; height:260px; display:block; }}
     .small {{ color:var(--muted); font-size:13px; }}
     .plan {{ border-left:4px solid #475467; }}
     footer {{ padding:18px 14px 30px; color:var(--muted); text-align:center; font-size:13px; }}
-    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} }}
+    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:19px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:18px; }} .pnl-value,.okx-value {{ font-size:23px; }} .position-grid {{ column-gap:14px; row-gap:24px; }} }}
+    @media (max-width:430px) {{ .contract-title {{ font-size:23px; }} .position-head {{ grid-template-columns:1fr; }} .pnl-box {{ text-align:left; }} .position-grid {{ grid-template-columns:repeat(2,1fr); }} }}
   </style>
 </head>
 <body>
@@ -143,12 +201,49 @@ def render_report(
 
     <section>
       <h2>当前仓位</h2>
-      <p>{html.escape(advice.position_summary)}</p>
-      <div class="grid">
-        <div class="tile span-6"><div class="label">多头</div><div class="value">{position.long.quantity_btc:g} BTC @ {fmt_price(position.long.entry_price)}</div><div class="small">杠杆 {position.long.leverage:g}x · 止损 {fmt_price(position.long.stop_loss)} · 止盈 {fmt_price(position.long.take_profit)}</div></div>
-        <div class="tile span-6"><div class="label">空头</div><div class="value">{position.short.quantity_btc:g} BTC @ {fmt_price(position.short.entry_price)}</div><div class="small">杠杆 {position.short.leverage:g}x · 止损 {fmt_price(position.short.stop_loss)} · 止盈 {fmt_price(position.short.take_profit)}</div></div>
-        <div class="tile span-6"><div class="label">预估强平价</div><div class="value">{fmt_price(position.liquidation_price)}</div></div>
-        <div class="tile span-6"><div class="label">当前仓位保证金</div><div class="value">{fmt_price(position.initial_margin_usdt)} USDT</div></div>
+      <div class="position-card">
+        <div class="position-head">
+          <div>
+            <div class="contract-title">BTCUSDT 永续 <span class="chevron">›</span></div>
+            <div class="pos-badges">
+              <span class="okx-badge {'side-short' if active_side == 'short' else 'side-long' if active_side == 'long' else ''}" id="positionSideBadge">{'空' if active_side == 'short' else '多' if active_side == 'long' else '无仓'}</span>
+              <span class="okx-badge">逐仓</span>
+              <span class="okx-badge" id="positionLeverage">{active_leverage:g}x</span>
+              <span class="signal-bars" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+            </div>
+          </div>
+          <div class="pnl-box">
+            <div class="pnl-label">收益额 (USDT)</div>
+            <div class="pnl-value {'loss' if initial_pnl < 0 else ''}" id="positionPnl">{fmt_money(initial_pnl)} ({fmt_pct(initial_roi)})</div>
+          </div>
+        </div>
+        <div class="position-grid">
+          <div>
+            <div class="okx-label">持仓量 (BTC)</div>
+            <div class="okx-value" id="positionQty">{active_qty:g}</div>
+          </div>
+          <div>
+            <div class="okx-label">保证金 (USDT)</div>
+            <div class="okx-value margin-inline"><span id="positionMargin">{fmt_price(position.initial_margin_usdt)}</span><span class="plus-dot">+</span></div>
+          </div>
+          <div>
+            <div class="okx-label">维持保证金率</div>
+            <div class="okx-value" id="positionMmr">{maintenance_ratio:.2f}%</div>
+          </div>
+          <div>
+            <div class="okx-label">开仓均价</div>
+            <div class="okx-value" id="positionEntry">{fmt_price(active_entry)}</div>
+          </div>
+          <div>
+            <div class="okx-label">标记价格</div>
+            <div class="okx-value" id="positionMarkPrice">{fmt_price(latest_price)}</div>
+          </div>
+          <div>
+            <div class="okx-label">预估强平价</div>
+            <div class="okx-value" id="positionLiqPrice">{fmt_price(position.liquidation_price)}</div>
+          </div>
+        </div>
+        <div class="liq-note {'danger' if liq_state == '危险' else 'warn' if liq_state == '偏紧' else ''}" id="positionLiqState">强平状态：{liq_state} · 距离强平约 {liq_gap:.2f}% · {html.escape(advice.position_summary)}</div>
       </div>
     </section>
 
@@ -211,6 +306,37 @@ def render_report(
     }};
     const pct = (a, b) => b ? (a / b - 1) * 100 : 0;
     const setText = (id, text) => {{ const el = document.getElementById(id); if (el) el.textContent = text; }};
+    function updatePositionUi(latest) {{
+      const side = positionConfig.activeSide;
+      const qty = Number(positionConfig.activeQty || 0);
+      const entry = Number(positionConfig.activeEntry || 0);
+      const margin = Number(positionConfig.initialMargin || 0);
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      let pnl = 0;
+      if (side === 'short') pnl = (entry - latest) * qty;
+      if (side === 'long') pnl = (latest - entry) * qty;
+      const roi = margin ? pnl / margin * 100 : 0;
+      const notional = Math.abs(qty * latest);
+      const maintenanceMargin = Math.max(notional * 0.004, 1);
+      const marginRatio = maintenanceMargin ? (margin + pnl) / maintenanceMargin * 100 : 0;
+      let liqGap = 0;
+      if (liq && side === 'short') liqGap = (liq / latest - 1) * 100;
+      if (liq && side === 'long') liqGap = (1 - liq / latest) * 100;
+      const state = liq ? (liqGap < 1.2 ? '危险' : liqGap < 3 ? '偏紧' : '正常') : '未提供强平价';
+      const pnlEl = document.getElementById('positionPnl');
+      if (pnlEl) {{
+        pnlEl.textContent = `${{pnl >= 0 ? '+' : ''}}${{pnl.toLocaleString('en-US', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }})}} (${{fmtPct(roi)}})`;
+        pnlEl.classList.toggle('loss', pnl < 0);
+      }}
+      setText('positionMarkPrice', fmtPrice(latest));
+      setText('positionMmr', `${{marginRatio.toFixed(2)}}%`);
+      const liqState = document.getElementById('positionLiqState');
+      if (liqState) {{
+        liqState.textContent = `强平状态：${{state}} · 距离强平约 ${{liq ? liqGap.toFixed(2) : '-'}}% · 维持保证金率为估算值，实际以 OKX 账户页为准`;
+        liqState.classList.toggle('danger', state === '危险');
+        liqState.classList.toggle('warn', state === '偏紧');
+      }}
+    }}
     let liveSupport = {indicators.support};
     let liveResistance = {indicators.resistance};
     function updateSimplePlan(latest, support, resistance, source) {{
@@ -220,6 +346,7 @@ def render_report(
       setText('simpleTakeProfit', `${{fmtPrice(shortTp1)}} - ${{fmtPrice(shortTp2)}} - ${{fmtPrice(shortTp2 * 0.965)}} 分批止盈`);
       setText('simpleOpenAdvice', `${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 0.965)}} 分批开多`);
       setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
+      updatePositionUi(latest);
     }}
     const okxHosts = ['https://openapi.okx.com', 'https://www.okx.com'];
     const okxUrl = (host, path) => `${{host}}${{path}}${{path.includes('?') ? '&' : '?'}}_=${{Date.now()}}`;
