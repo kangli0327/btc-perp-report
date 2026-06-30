@@ -219,8 +219,18 @@ def render_report(
       if (payload.code && payload.code !== '0') throw new Error(`${{label}} code ${{payload.code}}: ${{payload.msg || ''}}`);
       return payload;
     }}
+    async function fetchJsonSoft(label, path) {{
+      try {{
+        return {{ ok: true, label, payload: await fetchJson(label, path) }};
+      }} catch (error) {{
+        return {{ ok: false, label, error: String(error) }};
+      }}
+    }}
     function parseCandles(rows) {{
       return rows.slice().reverse().map(row => ({{ high:Number(row[2]), low:Number(row[3]), close:Number(row[4]), quoteVolume:Number(row[7] || 0) }}));
+    }}
+    function lastItem(items) {{
+      return items && items.length ? items[items.length - 1] : null;
     }}
     function nearestShortStop(latest, resistance) {{
       const candidates = [resistance * 1.003, latest * 1.006];
@@ -235,28 +245,34 @@ def render_report(
     async function refreshLiveMarket(reason = 'page-load') {{
       try {{
         setText('liveFetchMeta', `实时抓取状态：正在请求 OKX · ${{fmtTime(new Date())}}`);
-        const [c15j, c1hj, c4hj, fj, oij, mj] = await Promise.all([
+        const [c15j, c1hj, c4hj, fundingResult, oiResult, mj] = await Promise.all([
           fetchJson('15m candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=96'),
           fetchJson('1h candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=24'),
           fetchJson('4h candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=8'),
-          fetchJson('funding', '/api/v5/public/funding-rate?instId=BTC-USDT-SWAP'),
-          fetchJson('open interest', '/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP'),
+          fetchJsonSoft('funding', '/api/v5/public/funding-rate?instId=BTC-USDT-SWAP'),
+          fetchJsonSoft('open interest', '/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP'),
           fetchJson('mark price', '/api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP')
         ]);
         const c15 = parseCandles(c15j.data || []);
         const c1h = parseCandles(c1hj.data || []);
         const c4h = parseCandles(c4hj.data || []);
-        const latest = Number(mj.data?.[0]?.markPx || c15.at(-1)?.close || 0);
+        const markRow = mj.data && mj.data.length ? mj.data[0] : null;
+        const latestCandle = lastItem(c15);
+        const latest = Number((markRow && markRow.markPx) || (latestCandle && latestCandle.close) || 0);
         const support = Math.min(...c15.slice(-24).map(c => c.low));
         const resistance = Math.max(...c15.slice(-24).map(c => c.high));
-        const funding = Number(fj.data?.[0]?.fundingRate || 0) * 100;
-        const openInterest = Number(oij.data?.[0]?.oiCcy || 0);
+        const fundingPayload = fundingResult.ok ? fundingResult.payload : {{}};
+        const oiPayload = oiResult.ok ? oiResult.payload : {{}};
+        const fundingRow = fundingPayload.data && fundingPayload.data.length ? fundingPayload.data[0] : null;
+        const oiRow = oiPayload.data && oiPayload.data.length ? oiPayload.data[0] : null;
+        const funding = fundingRow ? Number(fundingRow.fundingRate || 0) * 100 : NaN;
+        const openInterest = oiRow ? Number(oiRow.oiCcy || 0) : NaN;
         const returns = c15.slice(1).map((c, i) => pct(c.close, c15[i].close));
         const avg = returns.reduce((a, b) => a + b, 0) / Math.max(returns.length, 1);
         const vol = Math.sqrt(returns.reduce((a, b) => a + (b - avg) ** 2, 0) / Math.max(returns.length, 1));
         const volumeSlice = c15.slice(-33, -1);
         const volumeBase = volumeSlice.reduce((a, c) => a + c.quoteVolume, 0) / Math.max(volumeSlice.length, 1);
-        const volumeRatio = volumeBase ? c15.at(-1).quoteVolume / volumeBase : 1;
+        const volumeRatio = volumeBase && latestCandle ? latestCandle.quoteVolume / volumeBase : 1;
         const shortStop = positionConfig.shortStop || nearestShortStop(latest, resistance);
         const shortTp1 = Math.min(latest * 0.988, (support + resistance) / 2);
         const shortTp2 = support;
@@ -267,9 +283,9 @@ def render_report(
         const addBudget = positionConfig.accountEquity * positionConfig.maxSingleAddPct;
 
         setText('liveLatestPrice', fmtPrice(latest));
-        setText('liveChange15m', fmtPct(pct(latest, c15.at(-2)?.close || latest)));
-        setText('liveChange1h', fmtPct(pct(latest, c1h.at(-2)?.close || latest)));
-        setText('liveChange4h', fmtPct(pct(latest, c4h.at(-2)?.close || latest)));
+        setText('liveChange15m', fmtPct(pct(latest, c15.length >= 2 ? c15[c15.length - 2].close : latest)));
+        setText('liveChange1h', fmtPct(pct(latest, c1h.length >= 2 ? c1h[c1h.length - 2].close : latest)));
+        setText('liveChange4h', fmtPct(pct(latest, c4h.length >= 2 ? c4h[c4h.length - 2].close : latest)));
         setText('liveFunding', fmtPct(funding));
         setText('liveOpenInterest', fmtPrice(openInterest));
         setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：浏览器现场抓取`);
@@ -277,9 +293,10 @@ def render_report(
         setText('liveShortPlan', `空头计划：已有空单 ${{positionConfig.shortQty}} BTC，开仓均价 ${{fmtPrice(positionConfig.shortEntry)}}。若价格反弹到 ${{fmtPrice(resistance * 0.998)}} - ${{fmtPrice(resistance * 1.002)}} 受阻，可继续持有；不建议在强平价附近继续加空。必须设置硬止损 ${{fmtPrice(shortStop)}}，第一止盈 ${{fmtPrice(shortTp1)}}，第二止盈 ${{fmtPrice(shortTp2)}}。若跌破 ${{fmtPrice(shortTp1)}} 后反抽不破，可把止损下移到开仓价 ${{fmtPrice(positionConfig.shortEntry)}} 附近。`);
         setText('liveInvalidation', `空头失效：15分钟收盘突破 ${{fmtPrice(resistance)}} 或触发止损 ${{fmtPrice(shortStop)}}；多头失效：15分钟收盘跌破 ${{fmtPrice(support)}} 或触发止损 ${{fmtPrice(longStop)}}。`);
         setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：OKX 浏览器现场抓取`);
-        setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}`);
+        const softWarnings = [fundingResult, oiResult].filter(item => !item.ok).map(item => `${{item.label}}失败：${{item.error}}`);
+        setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}${{softWarnings.length ? ' · 部分数据缺失：' + softWarnings.join('；') : ''}}`);
         const status = document.getElementById('liveStatus');
-        if (status) status.innerHTML = `<li>本次页面刷新已现场获取 OKX 行情；触发方式：${{reason}}</li>`;
+        if (status) status.innerHTML = `<li>本次页面刷新已现场获取 OKX 行情；触发方式：${{reason}}</li>${{softWarnings.map(item => `<li>${{item}}</li>`).join('')}}`;
       }} catch (error) {{
         setText('liveFetchMeta', `实时抓取状态：失败 · ${{String(error)}} · ${{fmtTime(new Date())}}`);
         const status = document.getElementById('liveStatus');
