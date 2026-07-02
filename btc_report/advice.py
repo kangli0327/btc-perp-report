@@ -96,8 +96,9 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
     long_tp2 = long_trigger * 1.014
     short_entry = ind.resistance
     short_stop = _nearest_stop_for_short(position, ind)
-    short_tp1 = min(ind.latest_price * 0.988, (ind.support + ind.resistance) / 2)
-    short_tp2 = ind.support
+    active_short_entry = position.short.entry_price if has_short and position.short.entry_price else ind.latest_price
+    short_tp1 = min(active_short_entry, ind.latest_price * 0.992, (ind.support + ind.resistance) / 2)
+    short_tp2 = min(ind.support, short_tp1 * 0.992)
 
     if pref.allow_long:
         long_plan = (
