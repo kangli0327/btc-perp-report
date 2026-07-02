@@ -16,6 +16,12 @@ class Advice:
     invalidation: str
     position_summary: str
     action_items: list[str]
+    long_score: int = 0
+    short_score: int = 0
+    risk_score: int = 0
+    trade_mode: str = "观望"
+    strategy_reason: str = ""
+    entry_conditions: list[str] | None = None
 
 
 def _money(value: float) -> str:
@@ -28,6 +34,89 @@ def _price(value: float) -> str:
 
 def _band(center: float, pct: float) -> str:
     return f"{_price(center * (1 - pct))} - {_price(center * (1 + pct))}"
+
+
+def _clamp_score(value: float) -> int:
+    return max(0, min(100, round(value)))
+
+
+def _strategy_scores(position: PositionConfig, ind: Indicators, liq_gap_pct: float) -> tuple[int, int, int, str, str, list[str]]:
+    long_score = 35.0
+    short_score = 35.0
+    reasons: list[str] = []
+    conditions: list[str] = []
+
+    if ind.rsi_4h > 55:
+        long_score += 14
+        reasons.append(f"4小时RSI {ind.rsi_4h:.1f} 高于55，趋势偏多")
+    elif ind.rsi_4h < 45:
+        short_score += 14
+        reasons.append(f"4小时RSI {ind.rsi_4h:.1f} 低于45，趋势偏空")
+    else:
+        reasons.append(f"4小时RSI {ind.rsi_4h:.1f} 中性，趋势过滤不强")
+
+    if ind.macd_hist_1h > 0:
+        long_score += 16
+        reasons.append("1小时MACD红柱为正，动能支持多头")
+    elif ind.macd_hist_1h < 0:
+        short_score += 16
+        reasons.append("1小时MACD绿柱为负，动能支持空头")
+
+    if ind.macd_hist_15m > 0 and ind.volume_ratio_15m > 1.2:
+        long_score += 10
+        reasons.append("15分钟放量上行，短线多头动能增强")
+    elif ind.macd_hist_15m < 0 and ind.volume_ratio_15m > 1.2:
+        short_score += 10
+        reasons.append("15分钟放量下行，短线空头动能增强")
+    elif ind.volume_ratio_15m < 0.8:
+        reasons.append("15分钟量能偏低，突破确认度不足")
+
+    if ind.ma_state_4h == "多头排列":
+        long_score += 12
+        conditions.append("4小时均线多头排列，多单只等回踩或突破确认")
+    elif ind.ma_state_4h == "空头排列":
+        short_score += 12
+        conditions.append("4小时均线空头排列，空单只等反弹受阻或跌破确认")
+
+    if ind.funding_rate_pct > 0.02 and ind.change_1h_pct < 0:
+        short_score += 8
+        reasons.append("资金费率偏正但价格走弱，多头拥挤偏利空")
+    elif ind.funding_rate_pct < -0.02 and ind.change_1h_pct > 0:
+        long_score += 8
+        reasons.append("资金费率偏负但价格走强，空头拥挤偏利多")
+
+    risk_score = 20.0
+    if ind.risk_level == "高":
+        risk_score += 30
+    elif ind.risk_level == "中":
+        risk_score += 15
+    if position.liquidation_price and liq_gap_pct < 1.2:
+        risk_score += 60
+    elif position.liquidation_price and liq_gap_pct < 3:
+        risk_score += 35
+    if abs(long_score - short_score) < 12:
+        risk_score += 15
+        conditions.append("RSI/MACD多空分歧明显，信号不足时不追单")
+
+    long_final = _clamp_score(long_score)
+    short_final = _clamp_score(short_score)
+    risk_final = _clamp_score(risk_score)
+    if risk_final >= 80:
+        mode = "禁止交易"
+    elif position.short.quantity_btc > 0 or position.long.quantity_btc > 0:
+        mode = "只管理持仓" if abs(long_final - short_final) < 18 else ("只做空" if short_final > long_final else "只做多")
+    elif long_final >= 62 and long_final - short_final >= 12:
+        mode = "只做多"
+    elif short_final >= 62 and short_final - long_final >= 12:
+        mode = "只做空"
+    elif long_final >= 55 and short_final >= 55:
+        mode = "多空都可"
+    else:
+        mode = "等待确认"
+
+    if not conditions:
+        conditions.append("等待15分钟收盘确认，避免在区间中部追单")
+    return long_final, short_final, risk_final, mode, "；".join(reasons[:4]), conditions
 
 
 def _nearest_stop_for_short(position: PositionConfig, ind: Indicators) -> float:
@@ -67,9 +156,14 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
         liq_gap_pct = (position.liquidation_price / ind.latest_price - 1) * 100
     elif position.liquidation_price and has_long:
         liq_gap_pct = (1 - position.liquidation_price / ind.latest_price) * 100
+    long_score, short_score, risk_score, trade_mode, strategy_reason, entry_conditions = _strategy_scores(position, ind, liq_gap_pct)
 
     if position.liquidation_price and liq_gap_pct < 1.2:
         headline = "强平距离过近，先处理风控，再考虑方向"
+    elif trade_mode == "只做空":
+        headline = "多周期动能偏空，空单按反弹受阻或跌破确认执行"
+    elif trade_mode == "只做多":
+        headline = "多周期动能偏多，空单不宜硬扛突破"
     elif ind.risk_level == "高":
         headline = f"{bias}但波动偏高，优先保护已有仓位"
     elif bias == "偏多":
@@ -101,8 +195,9 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
     short_tp2 = min(ind.support, short_tp1 * 0.992)
 
     if pref.allow_long:
+        long_gate = "允许" if trade_mode in {"只做多", "多空都可"} else "等待评分确认"
         long_plan = (
-            f"多头计划：只有在15分钟收盘站上 {_price(ind.resistance)}，或回踩 {_band(long_entry, 0.002)} "
+            f"多头计划（{long_gate}）：只有在15分钟收盘站上 {_price(ind.resistance)}，或回踩 {_band(long_entry, 0.002)} "
             f"后重新放量上行，才考虑做多；单次新增名义仓位不超过 {_money(add_budget)}。"
             f"止损 {_price(long_stop)}，止盈分两档：{_price(long_tp1)} / {_price(long_tp2)}。"
         )
@@ -110,10 +205,11 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
         long_plan = "多头计划：偏好禁止做多。"
 
     if pref.allow_short:
+        short_gate = "允许" if trade_mode in {"只做空", "多空都可", "只管理持仓"} else "等待评分确认"
         if has_short:
             emergency_stop = position.short.stop_loss or short_stop
             short_plan = (
-                f"空头计划：已有空单 {position.short.quantity_btc:g} BTC，开仓均价 {_price(position.short.entry_price)}。"
+                f"空头计划（{short_gate}）：已有空单 {position.short.quantity_btc:g} BTC，开仓均价 {_price(position.short.entry_price)}。"
                 f"若价格反弹到 {_band(short_entry, 0.002)} 受阻，可继续持有；不建议在强平价附近继续加空。"
                 f"必须设置硬止损 {_price(emergency_stop)}，第一止盈 {_price(short_tp1)}，第二止盈 {_price(short_tp2)}。"
                 f"若跌破 {_price(short_tp1)} 后反抽不破，可把止损下移到开仓价 {_price(position.short.entry_price)} 附近。"
@@ -122,7 +218,7 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
             actions.append(f"第一减仓/止盈观察：{_price(short_tp1)}；若成交放大跌破，再看 {_price(short_tp2)}。")
         else:
             short_plan = (
-                f"空头计划：只有反弹到 {_band(short_entry, 0.002)} 受阻，或15分钟收盘跌破 {_price(ind.support)}，才考虑开空；"
+                f"空头计划（{short_gate}）：只有反弹到 {_band(short_entry, 0.002)} 受阻，或15分钟收盘跌破 {_price(ind.support)}，才考虑开空；"
                 f"单次新增名义仓位不超过 {_money(add_budget)}。止损 {_price(short_stop)}，止盈 { _price(short_tp1)} / {_price(short_tp2)}。"
             )
     else:
@@ -147,4 +243,19 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
         f"总仓位使用 {usage * 100:.1f}%。"
     )
 
-    return Advice(headline, bias, risk_summary, long_plan, short_plan, invalidation, position_summary, actions)
+    return Advice(
+        headline,
+        bias,
+        risk_summary,
+        long_plan,
+        short_plan,
+        invalidation,
+        position_summary,
+        actions,
+        long_score=long_score,
+        short_score=short_score,
+        risk_score=risk_score,
+        trade_mode=trade_mode,
+        strategy_reason=strategy_reason,
+        entry_conditions=entry_conditions,
+    )

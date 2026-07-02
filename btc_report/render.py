@@ -147,6 +147,26 @@ def render_report(
         },
         ensure_ascii=False,
     )
+    strategy_basis_html = "".join(f"<li>{html.escape(item)}</li>" for item in (advice.entry_conditions or []))
+    strategy_json = json.dumps(
+        {
+            "longScore": advice.long_score,
+            "shortScore": advice.short_score,
+            "riskScore": advice.risk_score,
+            "tradeMode": advice.trade_mode,
+            "strategyReason": advice.strategy_reason,
+            "rsi15m": indicators.rsi_15m,
+            "rsi1h": indicators.rsi_1h,
+            "rsi4h": indicators.rsi_4h,
+            "macdHist15m": indicators.macd_hist_15m,
+            "macdHist1h": indicators.macd_hist_1h,
+            "macdHist4h": indicators.macd_hist_4h,
+            "volumeRatio15m": indicators.volume_ratio_15m,
+            "volumeRatio1h": indicators.volume_ratio_1h,
+            "volumeRatio4h": indicators.volume_ratio_4h,
+        },
+        ensure_ascii=False,
+    )
     points = chart_points(market)
     generated_text = fmt_dt(generated_at)
 
@@ -199,12 +219,12 @@ def render_report(
     .signal-bars span {{ width:4px; height:22px; border-radius:2px; background:#e5e7eb; }}
     .signal-bars span:first-child {{ background:#2e7d32; }}
     .pnl-box {{ text-align:right; min-width:156px; }}
-    .pnl-label {{ color:#8a8f98; font-size:22px; text-decoration:underline dashed #858b94 2px; text-underline-offset:6px; white-space:nowrap; }}
-    .pnl-value {{ margin-top:8px; font-size:27px; line-height:1.1; font-weight:780; color:#2e7d32; white-space:nowrap; }}
+    .pnl-label {{ color:#8a8f98; font-size:14px; text-decoration:underline dashed #858b94 1px; text-underline-offset:4px; white-space:nowrap; }}
+    .pnl-value {{ margin-top:8px; font-size:21px; line-height:1.1; font-weight:780; color:#2e7d32; white-space:nowrap; }}
     .pnl-value.loss {{ color:#b42318; }}
     .position-grid {{ display:grid; grid-template-columns:repeat(3,1fr); column-gap:28px; row-gap:28px; }}
-    .okx-label {{ color:#8a8f98; font-size:22px; line-height:1.15; text-decoration:underline dashed #858b94 2px; text-underline-offset:6px; }}
-    .okx-value {{ margin-top:9px; font-size:27px; line-height:1.1; font-weight:520; color:#101318; overflow-wrap:anywhere; }}
+    .okx-label {{ color:#8a8f98; font-size:14px; line-height:1.15; text-decoration:underline dashed #858b94 1px; text-underline-offset:4px; }}
+    .okx-value {{ margin-top:9px; font-size:21px; line-height:1.1; font-weight:650; color:#101318; overflow-wrap:anywhere; }}
     .margin-inline {{ display:inline-flex; align-items:center; gap:8px; }}
     .plus-dot {{ display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border:2px solid #111; border-radius:50%; font-size:20px; line-height:20px; font-weight:800; }}
     .liq-note {{ margin-top:18px; padding:10px 12px; border-radius:8px; background:#f8fafc; color:#475467; font-size:14px; }}
@@ -215,7 +235,7 @@ def render_report(
     .small {{ color:var(--muted); font-size:13px; }}
     .plan {{ border-left:4px solid #475467; }}
     footer {{ padding:18px 14px 30px; color:var(--muted); text-align:center; font-size:13px; }}
-    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:19px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:18px; }} .pnl-value,.okx-value {{ font-size:23px; }} .position-grid {{ column-gap:14px; row-gap:24px; }} }}
+    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
     @media (max-width:430px) {{ .contract-title {{ font-size:23px; }} .position-head {{ grid-template-columns:1fr; }} .pnl-box {{ text-align:left; }} .position-grid {{ grid-template-columns:repeat(2,1fr); }} }}
   </style>
 </head>
@@ -270,16 +290,10 @@ def render_report(
         <div class="tile span-4"><div class="label">15分钟涨跌</div><div class="value" id="liveChange15m">{fmt_pct(indicators.change_15m_pct)}</div></div>
         <div class="tile span-4"><div class="label">1小时涨跌</div><div class="value" id="liveChange1h">{fmt_pct(indicators.change_1h_pct)}</div></div>
         <div class="tile span-4"><div class="label">4小时涨跌</div><div class="value" id="liveChange4h">{fmt_pct(indicators.change_4h_pct)}</div></div>
-        <div class="tile span-4"><div class="label">24小时涨跌</div><div class="value">{fmt_pct(indicators.change_24h_pct)}</div></div>
+        <div class="tile span-4"><div class="label">24小时涨跌</div><div class="value" id="liveChange24h">{fmt_pct(indicators.change_24h_pct)}</div></div>
         <div class="tile span-4"><div class="label">资金费率</div><div class="value" id="liveFunding">{fmt_pct(indicators.funding_rate_pct)}</div></div>
         <div class="tile span-4"><div class="label">持仓量 BTC</div><div class="value" id="liveOpenInterest">{fmt_price(indicators.open_interest)}</div></div>
       </div>
-    </section>
-
-    <section>
-      <h2>15分钟短线结构</h2>
-      <canvas id="priceChart" width="960" height="300" aria-label="BTC 15分钟价格图"></canvas>
-      <p class="small" id="liveStructure">短线支撑：{fmt_price(indicators.support)} · 短线阻力：{fmt_price(indicators.resistance)} · 15分钟波动：{fmt_pct(indicators.volatility_24h_pct)} · 成交量倍率：{indicators.volume_4h_ratio:.2f}x</p>
     </section>
 
     <section>
@@ -332,6 +346,7 @@ def render_report(
 
     <section class="plan">
       <h2>后续操作计划</h2>
+      <p><strong>策略模式：</strong><span id="strategyTradeMode">{html.escape(advice.trade_mode)}</span> · 多头评分 <span id="strategyLongScore">{advice.long_score}</span> / 空头评分 <span id="strategyShortScore">{advice.short_score}</span> / 风险评分 <span id="strategyRiskScore">{advice.risk_score}</span></p>
       <p><strong>当前点位：</strong><span id="simpleCurrentPoint">{fmt_price(indicators.latest_price)}</span></p>
       <p><strong>止盈点位：</strong><span id="simpleTakeProfit">{fmt_price(indicators.latest_price * 0.988)} - {fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.965)} 分批止盈</span></p>
       <p><strong>止损点位：</strong><span id="simpleStopLoss">{fmt_price(indicators.resistance * 1.002)} 附近硬止损，接近强平前必须离场</span></p>
@@ -339,6 +354,18 @@ def render_report(
       <p><strong>开多点位：</strong><span id="simpleLongEntry">{fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.985)} 分批开多</span></p>
       <p><strong>参考信息：</strong><span id="simplePlanContext">支撑 {fmt_price(indicators.support)} · 阻力 {fmt_price(indicators.resistance)} · 强平 {fmt_price(position.liquidation_price)}</span></p>
       <p class="small">策略偏好：{html.escape(preference.style)}；单次加仓上限：账户权益的 {preference.max_single_add_pct * 100:.1f}%；总名义仓位上限：账户权益的 {preference.max_total_notional_pct * 100:.1f}%。</p>
+    </section>
+
+    <section>
+      <h2>策略依据</h2>
+      <p><strong>核心判断：</strong><span id="strategyReason">{html.escape(advice.strategy_reason or "等待多周期指标确认。")}</span></p>
+      <div class="grid">
+        <div class="tile span-4"><div class="label">15分钟 RSI/MACD/量能</div><div class="value" id="strategy15m">RSI {indicators.rsi_15m:.1f} · MACD柱 {indicators.macd_hist_15m:.1f} · 量 {indicators.volume_ratio_15m:.2f}x</div></div>
+        <div class="tile span-4"><div class="label">1小时 RSI/MACD/量能</div><div class="value" id="strategy1h">RSI {indicators.rsi_1h:.1f} · MACD柱 {indicators.macd_hist_1h:.1f} · 量 {indicators.volume_ratio_1h:.2f}x</div></div>
+        <div class="tile span-4"><div class="label">4小时 RSI/MACD/量能</div><div class="value" id="strategy4h">RSI {indicators.rsi_4h:.1f} · MACD柱 {indicators.macd_hist_4h:.1f} · 量 {indicators.volume_ratio_4h:.2f}x</div></div>
+      </div>
+      <ul>{strategy_basis_html}</ul>
+      <p class="small">点位只在策略评分和入场条件成立后执行；不是单纯用支撑阻力套公式。</p>
     </section>
 
     <section>
@@ -359,9 +386,11 @@ def render_report(
   <script>
     const points = {points};
     const positionConfig = {position_json};
+    const strategyConfig = {strategy_json};
     const canvas = document.getElementById('priceChart');
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas ? canvas.getContext('2d') : null;
     function drawChart() {{
+      if (!canvas || !ctx) return;
       const w = canvas.width, h = canvas.height;
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = '#ffffff';
@@ -557,6 +586,7 @@ def render_report(
       setText('liveChange15m', fmtPct(pct(latest, c15.length >= 2 ? c15[c15.length - 2].close : latest)));
       setText('liveChange1h', fmtPct(pct(latest, c1h.length >= 2 ? c1h[c1h.length - 2].close : latest)));
       setText('liveChange4h', fmtPct(pct(latest, c4h.length >= 2 ? c4h[c4h.length - 2].close : latest)));
+      setText('liveChange24h', fmtPct(pct(latest, c15.length >= 96 ? c15[c15.length - 96].close : c1h.length >= 24 ? c1h[c1h.length - 24].close : c4h.length >= 6 ? c4h[c4h.length - 6].close : latest)));
       setText('liveFunding', fmtPct(snapshot.funding));
       setText('liveOpenInterest', fmtPrice(snapshot.openInterest));
       setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：${{snapshot.source}}`);
@@ -663,6 +693,7 @@ def render_report(
         setText('liveChange15m', fmtPct(pct(latest, c15.length >= 2 ? c15[c15.length - 2].close : latest)));
         setText('liveChange1h', fmtPct(pct(latest, c1h.length >= 2 ? c1h[c1h.length - 2].close : latest)));
         setText('liveChange4h', fmtPct(pct(latest, c4h.length >= 2 ? c4h[c4h.length - 2].close : latest)));
+        setText('liveChange24h', fmtPct(pct(latest, c15.length >= 96 ? c15[c15.length - 96].close : c1h.length >= 24 ? c1h[c1h.length - 24].close : c4h.length >= 6 ? c4h[c4h.length - 6].close : latest)));
         setText('liveFunding', fmtPct(funding));
         setText('liveOpenInterest', fmtPrice(openInterest));
         setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：浏览器现场抓取`);
