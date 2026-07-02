@@ -45,6 +45,25 @@ class Indicators:
     ma_state_1h: str = "均线中性"
     ma_state_4h: str = "均线中性"
     momentum_summary: str = "动能中性"
+    ema_state_15m: str = "EMA中性"
+    ema_state_1h: str = "EMA中性"
+    ema_state_4h: str = "EMA中性"
+    ema20_15m: float = 0.0
+    ema60_15m: float = 0.0
+    ema120_15m: float = 0.0
+    ema20_1h: float = 0.0
+    ema60_1h: float = 0.0
+    ema120_1h: float = 0.0
+    ema20_4h: float = 0.0
+    ema60_4h: float = 0.0
+    ema120_4h: float = 0.0
+    atr_15m: float = 0.0
+    atr_1h: float = 0.0
+    atr_4h: float = 0.0
+    atr_15m_pct: float = 0.0
+    vwap_24h: float = 0.0
+    price_vs_vwap_pct: float = 0.0
+    position_context: str = "持仓量数据不足"
 
 
 def pct(a: float, b: float) -> float:
@@ -68,6 +87,12 @@ def ema_series(values: list[float], length: int) -> list[float]:
     for value in values[1:]:
         result.append(value * alpha + result[-1] * (1 - alpha))
     return result
+
+
+def ema_value(values: list[float], length: int) -> float:
+    if not values:
+        return 0.0
+    return ema_series(values, length)[-1]
 
 
 def rsi(values: list[float], length: int = 14) -> float:
@@ -106,6 +131,29 @@ def volume_ratio(candles: list[dict[str, float]], length: int = 20) -> float:
     return candles[-1]["quote_volume"] / base if base else 1.0
 
 
+def atr(candles: list[dict[str, float]], length: int = 14) -> float:
+    if len(candles) < 2:
+        return 0.0
+    ranges: list[float] = []
+    for prev, current in zip(candles[-length - 1 : -1], candles[-length:]):
+        high = current["high"]
+        low = current["low"]
+        prev_close = prev["close"]
+        ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return sum(ranges) / len(ranges) if ranges else 0.0
+
+
+def vwap(candles: list[dict[str, float]]) -> float:
+    numerator = 0.0
+    denominator = 0.0
+    for candle in candles:
+        typical = (candle["high"] + candle["low"] + candle["close"]) / 3
+        volume = candle.get("quote_volume", 0.0) or candle.get("volume", 0.0)
+        numerator += typical * volume
+        denominator += volume
+    return numerator / denominator if denominator else 0.0
+
+
 def ma_state(candles: list[dict[str, float]]) -> str:
     if not candles:
         return "均线中性"
@@ -118,6 +166,37 @@ def ma_state(candles: list[dict[str, float]]) -> str:
     if latest < fast < slow:
         return "空头排列"
     return "均线中性"
+
+
+def ema_state(candles: list[dict[str, float]]) -> tuple[str, float, float, float]:
+    if not candles:
+        return "EMA中性", 0.0, 0.0, 0.0
+    closes = [c["close"] for c in candles]
+    latest = closes[-1]
+    e20 = ema_value(closes, 20)
+    e60 = ema_value(closes, 60)
+    e120 = ema_value(closes, 120)
+    if latest > e20 > e60 > e120:
+        return "EMA多头排列", e20, e60, e120
+    if latest < e20 < e60 < e120:
+        return "EMA空头排列", e20, e60, e120
+    if latest > e20 and e20 > e60:
+        return "EMA偏多", e20, e60, e120
+    if latest < e20 and e20 < e60:
+        return "EMA偏空", e20, e60, e120
+    return "EMA震荡", e20, e60, e120
+
+
+def position_context(open_interest: float | None, change_1h: float, volume_ratio_1h: float) -> str:
+    if open_interest is None:
+        return "持仓量缺失，无法判断新资金力度"
+    if change_1h > 0.3 and volume_ratio_1h >= 1.2:
+        return "上涨配合放量，可能有新多头或空头回补推动"
+    if change_1h < -0.3 and volume_ratio_1h >= 1.2:
+        return "下跌配合放量，可能有新空头主动进场"
+    if abs(change_1h) < 0.25 and volume_ratio_1h < 0.8:
+        return "价格和成交都偏安静，持仓变化参考价值较低"
+    return "持仓量有数据，但需要结合价格突破确认"
 
 
 def momentum_text(rsi_value: float, macd_hist: float, vol_ratio: float, change_pct: float) -> str:
@@ -212,6 +291,14 @@ def compute_indicators(data: MarketData) -> Indicators:
     rsi_15m = rsi(closes_15m)
     rsi_1h = rsi(closes_1h)
     rsi_4h = rsi(closes_4h)
+    ema_state_15m, ema20_15m, ema60_15m, ema120_15m = ema_state(scalping or short_candles)
+    ema_state_1h, ema20_1h, ema60_1h, ema120_1h = ema_state(hourly or short_candles)
+    ema_state_4h, ema20_4h, ema60_4h, ema120_4h = ema_state(candles or short_candles)
+    atr_15m = atr(scalping or short_candles)
+    atr_1h = atr(hourly or short_candles)
+    atr_4h = atr(candles or short_candles)
+    day_vwap = vwap(last_24h)
+    price_vs_day_vwap = pct(latest, day_vwap) if day_vwap else 0.0
     return Indicators(
         latest_price=latest,
         change_15m_pct=change_15m,
@@ -250,4 +337,23 @@ def compute_indicators(data: MarketData) -> Indicators:
         ma_state_1h=ma_state(hourly or short_candles),
         ma_state_4h=ma_state(candles or short_candles),
         momentum_summary=f"15m：{momentum_text(rsi_15m, macd_hist_15m, ratio_15m, change_15m)}；1h：{momentum_text(rsi_1h, macd_hist_1h, ratio_1h, change_1h)}；4h：{momentum_text(rsi_4h, macd_hist_4h, ratio_4h, change_4h)}",
+        ema_state_15m=ema_state_15m,
+        ema_state_1h=ema_state_1h,
+        ema_state_4h=ema_state_4h,
+        ema20_15m=ema20_15m,
+        ema60_15m=ema60_15m,
+        ema120_15m=ema120_15m,
+        ema20_1h=ema20_1h,
+        ema60_1h=ema60_1h,
+        ema120_1h=ema120_1h,
+        ema20_4h=ema20_4h,
+        ema60_4h=ema60_4h,
+        ema120_4h=ema120_4h,
+        atr_15m=atr_15m,
+        atr_1h=atr_1h,
+        atr_4h=atr_4h,
+        atr_15m_pct=pct(atr_15m, latest),
+        vwap_24h=day_vwap,
+        price_vs_vwap_pct=price_vs_day_vwap,
+        position_context=position_context(data.open_interest, change_1h, ratio_1h),
     )

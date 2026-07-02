@@ -48,6 +48,7 @@ jobs:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
+          ACCOUNT_WORKER_URL: ${{ secrets.ACCOUNT_WORKER_URL }}
         run: python -m btc_report.generate
 
       - name: Upload Pages artifact

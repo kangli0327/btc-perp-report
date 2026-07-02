@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -40,10 +41,10 @@ def chart_points(data: MarketData) -> str:
 def sprint_stage(equity_usdt: float) -> dict[str, float | str]:
     equity_cny = equity_usdt * 7.2
     stages: list[dict[str, float | str]] = [
-        {"name": "阶段1：5000 -> 10000元", "min": 0.0, "max": 10000.0, "risk": 0.035, "daily": 0.10, "leverage": "3x-8x"},
-        {"name": "阶段2：10000 -> 30000元", "min": 10000.0, "max": 30000.0, "risk": 0.030, "daily": 0.08, "leverage": "3x-6x"},
-        {"name": "阶段3：30000 -> 100000元", "min": 30000.0, "max": 100000.0, "risk": 0.020, "daily": 0.06, "leverage": "2x-5x"},
-        {"name": "阶段4：100000 -> 300000元", "min": 100000.0, "max": 300000.0, "risk": 0.015, "daily": 0.04, "leverage": "1x-3x"},
+        {"name": "阶段1：5000 -> 10000元", "min": 0.0, "max": 10000.0, "risk": 0.035, "weekly": 0.25},
+        {"name": "阶段2：10000 -> 30000元", "min": 10000.0, "max": 30000.0, "risk": 0.030, "weekly": 0.18},
+        {"name": "阶段3：30000 -> 100000元", "min": 30000.0, "max": 100000.0, "risk": 0.020, "weekly": 0.12},
+        {"name": "阶段4：100000 -> 300000元", "min": 100000.0, "max": 300000.0, "risk": 0.015, "weekly": 0.08},
     ]
     for stage in stages:
         if equity_cny < float(stage["max"]):
@@ -103,8 +104,10 @@ def render_report(
     liq_state = "危险" if position.liquidation_price and liq_gap < 1.2 else "偏紧" if position.liquidation_price and liq_gap < 3 else "正常"
     sprint = sprint_stage(position.account_equity_usdt)
     single_risk_usdt = position.account_equity_usdt * float(sprint["risk"])
-    daily_risk_usdt = position.account_equity_usdt * float(sprint["daily"])
-    target_progress = min(position.account_equity_usdt * 7.2 / 300000 * 100, 100)
+    equity_cny = position.account_equity_usdt * 7.2
+    weekly_risk_cny = equity_cny * float(sprint["weekly"])
+    weekly_loss_cny = 0.0
+    target_progress = min(equity_cny / 300000 * 100, 100)
     macro_high_soon = any(
         event.impact in {"高", "中高"} and 0 <= (event.scheduled_at.astimezone(CN_TZ) - generated_at).total_seconds() <= 30 * 60
         for event in macro_brief.events
@@ -143,11 +146,16 @@ def render_report(
             "accountEquity": position.account_equity_usdt,
             "maxSingleAddPct": preference.max_single_add_pct,
             "sprintSingleRisk": single_risk_usdt,
-            "sprintDailyRisk": daily_risk_usdt,
+            "sprintWeeklyRiskCny": weekly_risk_cny,
+            "sprintWeeklyLossCny": weekly_loss_cny,
+            "fallbackCnyRate": 7.2,
         },
         ensure_ascii=False,
     )
-    strategy_basis_html = "".join(f"<li>{html.escape(item)}</li>" for item in (advice.entry_conditions or []))
+    strategy_basis_html = "".join(
+        f"<div class=\"reason-card\"><div class=\"reason-title\">{html.escape(title)}</div><p>{html.escape(body)}</p></div>"
+        for title, body in (advice.strategy_cards or [])
+    )
     strategy_json = json.dumps(
         {
             "longScore": advice.long_score,
@@ -164,11 +172,23 @@ def render_report(
             "volumeRatio15m": indicators.volume_ratio_15m,
             "volumeRatio1h": indicators.volume_ratio_1h,
             "volumeRatio4h": indicators.volume_ratio_4h,
+            "emaState15m": indicators.ema_state_15m,
+            "emaState1h": indicators.ema_state_1h,
+            "emaState4h": indicators.ema_state_4h,
+            "atr15m": indicators.atr_15m,
+            "atr15mPct": indicators.atr_15m_pct,
+            "vwap24h": indicators.vwap_24h,
+            "priceVsVwapPct": indicators.price_vs_vwap_pct,
+            "support": indicators.support,
+            "resistance": indicators.resistance,
+            "fundingRatePct": indicators.funding_rate_pct,
+            "positionContext": indicators.position_context,
         },
         ensure_ascii=False,
     )
     points = chart_points(market)
     generated_text = fmt_dt(generated_at)
+    account_worker_url = os.environ.get("ACCOUNT_WORKER_URL", "").strip()
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -196,10 +216,13 @@ def render_report(
     .sprint-top {{ display:grid; grid-template-columns:1.2fr .8fr; gap:14px; align-items:start; }}
     .sprint-status {{ font-size:28px; line-height:1.08; font-weight:820; margin:0 0 8px; }}
     .sprint-reason {{ color:#cbd5e1; margin:0; }}
-    .sprint-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:14px; }}
+    .sprint-grid {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:14px; }}
     .sprint-item {{ background:#111827; border:1px solid #334155; border-radius:8px; padding:10px; }}
     .sprint-item .label {{ color:#94a3b8; }}
     .sprint-item .value {{ color:#fff; font-size:20px; }}
+    .sprint-item.stage .value {{ white-space:normal; word-break:keep-all; overflow-wrap:normal; font-size:18px; line-height:1.25; }}
+    .equity-main {{ font-size:24px; font-weight:820; }}
+    .equity-sub {{ color:#cbd5e1; font-size:13px; margin-top:2px; }}
     .progress {{ width:100%; height:9px; background:#1e293b; border-radius:999px; overflow:hidden; margin-top:10px; }}
     .progress span {{ display:block; height:100%; background:#22c55e; border-radius:999px; }}
     .sprint-warning {{ color:#fde68a; font-size:13px; margin-top:10px; }}
@@ -234,8 +257,19 @@ def render_report(
     canvas {{ width:100%; height:260px; display:block; }}
     .small {{ color:var(--muted); font-size:13px; }}
     .plan {{ border-left:4px solid #475467; }}
+    .market-price {{ text-align:center; padding:18px 14px 20px; }}
+    .market-price .label {{ font-size:14px; }}
+    .market-price .value {{ font-size:clamp(38px,12vw,72px); line-height:1; letter-spacing:0; }}
+    .plan-lines {{ display:grid; gap:8px; margin-top:10px; }}
+    .plan-line {{ display:grid; grid-template-columns:92px 1fr; gap:10px; align-items:start; padding:10px 0; border-top:1px solid var(--line); }}
+    .plan-line:first-child {{ border-top:0; }}
+    .plan-label {{ color:#475467; font-weight:760; }}
+    .reason-grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-top:12px; }}
+    .reason-card {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; }}
+    .reason-title {{ font-weight:780; margin-bottom:6px; color:#102a43; }}
+    .reason-card p {{ margin:0; color:#344054; }}
     footer {{ padding:18px 14px 30px; color:var(--muted); text-align:center; font-size:13px; }}
-    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
+    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .reason-grid {{ grid-template-columns:1fr; }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
     @media (max-width:430px) {{ .contract-title {{ font-size:23px; }} .position-head {{ grid-template-columns:1fr; }} .pnl-box {{ text-align:left; }} .position-grid {{ grid-template-columns:repeat(2,1fr); }} }}
   </style>
 </head>
@@ -263,36 +297,21 @@ def render_report(
         </div>
       </div>
       <div class="sprint-grid">
-        <div class="sprint-item"><div class="label">当前阶段</div><div class="value">{html.escape(str(sprint["name"]))}</div></div>
-        <div class="sprint-item"><div class="label">账户权益</div><div class="value" id="sprintEquity">{fmt_price(position.account_equity_usdt)} USDT</div></div>
-        <div class="sprint-item"><div class="label">单笔最大亏损</div><div class="value" id="sprintSingleRisk">{fmt_price(single_risk_usdt)} USDT</div></div>
-        <div class="sprint-item"><div class="label">今日最大亏损</div><div class="value" id="sprintDailyRisk">{fmt_price(daily_risk_usdt)} USDT</div></div>
-        <div class="sprint-item"><div class="label">建议有效杠杆</div><div class="value" id="sprintLeverage">{html.escape(str(sprint["leverage"]))}</div></div>
-        <div class="sprint-item"><div class="label">强平距离</div><div class="value" id="sprintLiqGap">{liq_gap:.2f}%</div></div>
-        <div class="sprint-item"><div class="label">本次最大保证金</div><div class="value" id="sprintMaxMargin">{fmt_price(single_risk_usdt * 6)} USDT</div></div>
+        <div class="sprint-item stage"><div class="label">当前阶段</div><div class="value">{html.escape(str(sprint["name"]))}</div></div>
+        <div class="sprint-item"><div class="label">账户权益人民币</div><div class="value"><div class="equity-main" id="sprintEquityCny">¥{fmt_price(equity_cny)}</div><div class="equity-sub" id="sprintEquity">{fmt_price(position.account_equity_usdt)} USDT</div></div></div>
+        <div class="sprint-item"><div class="label">一周最大亏损/已亏损</div><div class="value" id="sprintWeeklyRisk">¥{fmt_price(weekly_loss_cny)} / ¥{fmt_price(weekly_risk_cny)}</div></div>
+        <div class="sprint-item"><div class="label">用户设定杠杆</div><div class="value" id="sprintLeverage">100x</div></div>
         <div class="sprint-item"><div class="label">交易纪律</div><div class="value">亏损触线停手</div></div>
+        <div class="sprint-item"><div class="label">权益刷新</div><div class="value" id="accountRefreshState">等待实时账户接口</div></div>
       </div>
-    </section>
-
-    <section class="hero">
-      <div class="headline">{html.escape(advice.headline)}</div>
-      <span class="pill">方向：{html.escape(advice.bias)}</span>
-      <span class="pill {'risk-high' if indicators.risk_level == '高' else 'risk-mid' if indicators.risk_level == '中' else 'risk-low'}">风险：{html.escape(indicators.risk_level)}</span>
-      <span class="pill">趋势：{html.escape(indicators.trend)}</span>
-      <p>{html.escape(advice.risk_summary)}</p>
-      <ul>{actions_html}</ul>
     </section>
 
     <section>
       <h2>市场快照</h2>
-      <div class="grid">
-        <div class="tile span-4"><div class="label">最新标记价</div><div class="value" id="liveLatestPrice">{fmt_price(indicators.latest_price)}</div></div>
-        <div class="tile span-4"><div class="label">15分钟涨跌</div><div class="value" id="liveChange15m">{fmt_pct(indicators.change_15m_pct)}</div></div>
-        <div class="tile span-4"><div class="label">1小时涨跌</div><div class="value" id="liveChange1h">{fmt_pct(indicators.change_1h_pct)}</div></div>
-        <div class="tile span-4"><div class="label">4小时涨跌</div><div class="value" id="liveChange4h">{fmt_pct(indicators.change_4h_pct)}</div></div>
-        <div class="tile span-4"><div class="label">24小时涨跌</div><div class="value" id="liveChange24h">{fmt_pct(indicators.change_24h_pct)}</div></div>
-        <div class="tile span-4"><div class="label">资金费率</div><div class="value" id="liveFunding">{fmt_pct(indicators.funding_rate_pct)}</div></div>
-        <div class="tile span-4"><div class="label">持仓量 BTC</div><div class="value" id="liveOpenInterest">{fmt_price(indicators.open_interest)}</div></div>
+      <div class="market-price">
+        <div class="label">BTCUSDT 最新标记价格</div>
+        <div class="value" id="liveLatestPrice">{fmt_price(indicators.latest_price)}</div>
+        <div class="small" id="livePriceSource">浏览器打开后现场刷新</div>
       </div>
     </section>
 
@@ -347,24 +366,21 @@ def render_report(
     <section class="plan">
       <h2>后续操作计划</h2>
       <p><strong>策略模式：</strong><span id="strategyTradeMode">{html.escape(advice.trade_mode)}</span> · 多头评分 <span id="strategyLongScore">{advice.long_score}</span> / 空头评分 <span id="strategyShortScore">{advice.short_score}</span> / 风险评分 <span id="strategyRiskScore">{advice.risk_score}</span></p>
-      <p><strong>当前点位：</strong><span id="simpleCurrentPoint">{fmt_price(indicators.latest_price)}</span></p>
-      <p><strong>止盈点位：</strong><span id="simpleTakeProfit">{fmt_price(indicators.latest_price * 0.988)} - {fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.965)} 分批止盈</span></p>
-      <p><strong>止损点位：</strong><span id="simpleStopLoss">{fmt_price(indicators.resistance * 1.002)} 附近硬止损，接近强平前必须离场</span></p>
-      <p><strong>加空点位：</strong><span id="simpleShortEntry">{fmt_price(indicators.resistance * 0.998)} - {fmt_price(indicators.resistance * 1.002)} 反弹受阻再考虑</span></p>
-      <p><strong>开多点位：</strong><span id="simpleLongEntry">{fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.985)} 分批开多</span></p>
-      <p><strong>参考信息：</strong><span id="simplePlanContext">支撑 {fmt_price(indicators.support)} · 阻力 {fmt_price(indicators.resistance)} · 强平 {fmt_price(position.liquidation_price)}</span></p>
-      <p class="small">策略偏好：{html.escape(preference.style)}；单次加仓上限：账户权益的 {preference.max_single_add_pct * 100:.1f}%；总名义仓位上限：账户权益的 {preference.max_total_notional_pct * 100:.1f}%。</p>
+      <div class="plan-lines">
+        <div class="plan-line"><div class="plan-label">当前点位</div><div id="simpleCurrentPoint">{fmt_price(indicators.latest_price)}</div></div>
+        <div class="plan-line"><div class="plan-label">止盈点位</div><div id="simpleTakeProfit">{fmt_price(indicators.latest_price * 0.988)} / {fmt_price(indicators.support)} / {fmt_price(indicators.support * 0.965)} 分批止盈</div></div>
+        <div class="plan-line"><div class="plan-label">止损点位</div><div id="simpleStopLoss">{fmt_price(indicators.resistance * 1.002)} 附近硬止损，接近强平前必须离场</div></div>
+        <div class="plan-line"><div class="plan-label">加空计划</div><div id="simpleShortEntry">{fmt_price(indicators.resistance * 0.998)} - {fmt_price(indicators.resistance * 1.002)} 反弹受阻再考虑</div></div>
+        <div class="plan-line"><div class="plan-label">开多计划</div><div id="simpleLongEntry">{fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.985)} 企稳后分批开多</div></div>
+        <div class="plan-line"><div class="plan-label">保证金</div><div id="simpleMarginBudget">本次最大保证金：{fmt_price(single_risk_usdt * 6)} USDT，必须和止损距离一起收缩</div></div>
+      </div>
+      <p class="small" id="simplePlanContext">支撑 {fmt_price(indicators.support)} · 阻力 {fmt_price(indicators.resistance)} · ATR {fmt_price(indicators.atr_15m)} · VWAP {fmt_price(indicators.vwap_24h)} · 数据源：模板生成</p>
     </section>
 
     <section>
       <h2>策略依据</h2>
       <p><strong>核心判断：</strong><span id="strategyReason">{html.escape(advice.strategy_reason or "等待多周期指标确认。")}</span></p>
-      <div class="grid">
-        <div class="tile span-4"><div class="label">15分钟 RSI/MACD/量能</div><div class="value" id="strategy15m">RSI {indicators.rsi_15m:.1f} · MACD柱 {indicators.macd_hist_15m:.1f} · 量 {indicators.volume_ratio_15m:.2f}x</div></div>
-        <div class="tile span-4"><div class="label">1小时 RSI/MACD/量能</div><div class="value" id="strategy1h">RSI {indicators.rsi_1h:.1f} · MACD柱 {indicators.macd_hist_1h:.1f} · 量 {indicators.volume_ratio_1h:.2f}x</div></div>
-        <div class="tile span-4"><div class="label">4小时 RSI/MACD/量能</div><div class="value" id="strategy4h">RSI {indicators.rsi_4h:.1f} · MACD柱 {indicators.macd_hist_4h:.1f} · 量 {indicators.volume_ratio_4h:.2f}x</div></div>
-      </div>
-      <ul>{strategy_basis_html}</ul>
+      <div class="reason-grid" id="strategyCards">{strategy_basis_html}</div>
       <p class="small">点位只在策略评分和入场条件成立后执行；不是单纯用支撑阻力套公式。</p>
     </section>
 
@@ -387,6 +403,7 @@ def render_report(
     const points = {points};
     const positionConfig = {position_json};
     const strategyConfig = {strategy_json};
+    const accountWorkerUrl = {json.dumps(account_worker_url, ensure_ascii=False)} || window.BTC_ACCOUNT_WORKER_URL || localStorage.getItem('BTC_ACCOUNT_WORKER_URL') || '';
     const canvas = document.getElementById('priceChart');
     const ctx = canvas ? canvas.getContext('2d') : null;
     function drawChart() {{
@@ -414,6 +431,8 @@ def render_report(
     }}
     drawChart();
     const fmtPrice = value => Number.isFinite(value) ? value.toLocaleString('en-US', {{ minimumFractionDigits: 1, maximumFractionDigits: 1 }}) : '-';
+    const fmtMoney2 = value => Number.isFinite(value) ? value.toLocaleString('en-US', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }}) : '-';
+    const fmtCny = value => Number.isFinite(value) ? `¥${{value.toLocaleString('zh-CN', {{ minimumFractionDigits: 0, maximumFractionDigits: 0 }})}}` : '-';
     const fmtPct = value => Number.isFinite(value) ? `${{value >= 0 ? '+' : ''}}${{value.toFixed(2)}}%` : '-';
     const fmtTime = value => {{
       const pad = number => String(number).padStart(2, '0');
@@ -453,6 +472,52 @@ def render_report(
       }}
       updateSprintUi(latest, liqGap, state);
     }}
+    function applyAccountSnapshot(account) {{
+      if (!account || !account.ok) return;
+      const rate = Number(account.cnyRate || positionConfig.fallbackCnyRate || 7.2);
+      const equityUsdt = Number(account.equityUsdt || positionConfig.accountEquity || 0);
+      const equityCny = Number(account.equityCny || equityUsdt * rate);
+      const weekLossCny = Number(account.weekLossCny || 0);
+      const weekRiskCny = Number(account.weekRiskCny || positionConfig.sprintWeeklyRiskCny || 0);
+      positionConfig.accountEquity = equityUsdt;
+      setText('sprintEquityCny', fmtCny(equityCny));
+      setText('sprintEquity', `${{fmtMoney2(equityUsdt)}} USDT · 汇率 ${{rate.toFixed(3)}}`);
+      setText('sprintWeeklyRisk', `${{fmtCny(weekLossCny)}} / ${{fmtCny(weekRiskCny)}}`);
+      setText('accountRefreshState', `成功 · ${{fmtTime(new Date())}}`);
+      if (account.position) {{
+        const p = account.position;
+        const side = p.side || positionConfig.activeSide;
+        positionConfig.activeSide = side;
+        positionConfig.activeQty = Number(p.quantityBtc || positionConfig.activeQty || 0);
+        positionConfig.activeEntry = Number(p.entryPrice || positionConfig.activeEntry || 0);
+        positionConfig.activeLeverage = Number(p.leverage || 100);
+        positionConfig.initialMargin = Number(p.marginUsdt || positionConfig.initialMargin || 0);
+        positionConfig.liquidationPrice = Number(p.liquidationPrice || positionConfig.liquidationPrice || 0);
+        setText('positionSideBadge', side === 'short' ? '空' : side === 'long' ? '多' : '无仓');
+        setText('positionLeverage', `${{positionConfig.activeLeverage || 100}}x`);
+        setText('positionQty', `${{positionConfig.activeQty || 0}}`);
+        setText('positionEntry', fmtPrice(positionConfig.activeEntry));
+        setText('positionMargin', fmtPrice(positionConfig.initialMargin));
+        setText('positionLiqPrice', fmtPrice(positionConfig.liquidationPrice));
+      }}
+    }}
+    async function refreshAccount(reason = 'page-load') {{
+      if (!accountWorkerUrl) {{
+        setText('accountRefreshState', '未配置实时账户接口');
+        setText('sprintEquityCny', fmtCny(Number(positionConfig.accountEquity || 0) * Number(positionConfig.fallbackCnyRate || 7.2)));
+        setText('sprintWeeklyRisk', `${{fmtCny(positionConfig.sprintWeeklyLossCny || 0)}} / ${{fmtCny(positionConfig.sprintWeeklyRiskCny || 0)}}`);
+        return;
+      }}
+      try {{
+        setText('accountRefreshState', `刷新中 · ${{fmtTime(new Date())}}`);
+        const response = await fetch(withCacheBust(accountWorkerUrl), {{ cache: 'no-store' }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        applyAccountSnapshot(payload);
+      }} catch (error) {{
+        setText('accountRefreshState', `失败 · ${{String(error).slice(0, 42)}}`);
+      }}
+    }}
     function updateSprintUi(latest, liqGap, liqState) {{
       const hasPosition = positionConfig.activeSide !== 'flat' && Number(positionConfig.activeQty || 0) > 0;
       let status = '可等待触发';
@@ -470,11 +535,7 @@ def render_report(
       setText('sprintStatus', status);
       setText('sprintReason', reason);
       setText('sprintOneLine', `${{status}}：${{reason}}`);
-      setText('sprintLiqGap', Number.isFinite(liqGap) ? `${{liqGap.toFixed(2)}}%` : '-');
-      setText('sprintEquity', `${{fmtPrice(positionConfig.accountEquity)}} USDT`);
-      setText('sprintSingleRisk', `${{fmtPrice(positionConfig.sprintSingleRisk)}} USDT`);
-      setText('sprintDailyRisk', `${{fmtPrice(positionConfig.sprintDailyRisk)}} USDT`);
-      setText('sprintMaxMargin', `${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT`);
+      setText('sprintEquity', `${{fmtMoney2(positionConfig.accountEquity)}} USDT`);
     }}
     let liveSupport = {indicators.support};
     let liveResistance = {indicators.resistance};
@@ -502,9 +563,36 @@ def render_report(
       setText('simpleStopLoss', `${{fmtPrice(shortStop)}} 硬止损；若15分钟收盘站上 ${{fmtPrice(resistance)}}，先减仓或离场`);
       setText('simpleShortEntry', `反弹 ${{fmtPrice(shortEntry1)}} - ${{fmtPrice(shortEntry2)}} 受阻再加空；跌破 ${{fmtPrice(shortBreakdown)}} 后回抽不破可追空`);
       setText('simpleLongEntry', `仅在 ${{fmtPrice(longEntry1)}} - ${{fmtPrice(longEntry2)}} 企稳，或15分钟重新站上 ${{fmtPrice(resistance)}} 后回踩不破再开多`);
-      setText('simplePlanContext', `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 开仓均价 ${{fmtPrice(entry)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 数据源：${{source}}`);
+      setText('simpleMarginBudget', `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；如果止损距离扩大，保证金要同步缩小`);
+      setText('simplePlanContext', `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 开仓均价 ${{fmtPrice(entry)}} · 强平 ${{fmtPrice(liq)}} · 数据源：${{source}}`);
       setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
       updatePositionUi(latest);
+    }}
+    function updateLiveStrategyBasis(snapshot) {{
+      const c15 = snapshot.c15 || [];
+      const latest = Number(snapshot.latest || 0);
+      const support = liveSupport;
+      const resistance = liveResistance;
+      const recent = c15.slice(-24);
+      const volumeBase = c15.slice(-33, -1).reduce((a, c) => a + c.quoteVolume, 0) / Math.max(c15.slice(-33, -1).length, 1);
+      const latestVolume = recent.length ? recent[recent.length - 1].quoteVolume : 0;
+      const volumeRatio = volumeBase ? latestVolume / volumeBase : strategyConfig.volumeRatio15m;
+      const vwap = recent.reduce((acc, c) => acc + ((c.high + c.low + c.close) / 3) * c.quoteVolume, 0) / Math.max(recent.reduce((acc, c) => acc + c.quoteVolume, 0), 1);
+      const priceVsVwap = vwap ? pct(latest, vwap) : strategyConfig.priceVsVwapPct;
+      const funding = Number(snapshot.funding);
+      const cards = [
+        ['大方向', `${{strategyConfig.emaState4h}}；4小时RSI ${{Number(strategyConfig.rsi4h).toFixed(1)}}。大周期决定只顺势做，逆势只当短线反弹处理。`],
+        ['短线动能', `1小时MACD柱 ${{Number(strategyConfig.macdHist1h).toFixed(1)}}，15分钟MACD柱 ${{Number(strategyConfig.macdHist15m).toFixed(1)}}；同向时才更适合执行开仓。`],
+        ['量价关系', `15分钟成交量约为均量 ${{Number(volumeRatio).toFixed(2)}} 倍；放量突破更可信，缩量反弹更适合观察是否受阻。`],
+        ['位置判断', `支撑 ${{fmtPrice(support)}}，阻力 ${{fmtPrice(resistance)}}，日内VWAP ${{fmtPrice(vwap)}}；当前相对VWAP ${{fmtPct(priceVsVwap)}}。`],
+        ['波动率', `15分钟ATR约 ${{fmtPrice(strategyConfig.atr15m)}} USDT；止损要放在策略失效点外，保证金随止损距离缩小。`],
+        ['资金情绪', `资金费率 ${{fmtPct(Number.isFinite(funding) ? funding : strategyConfig.fundingRatePct)}}；费率过热时不要追拥挤方向。`],
+        ['风险结论', `最终模式：${{strategyConfig.tradeMode}}。你固定使用100x，所以任何加仓都必须先有止损和本次最大保证金。`]
+      ];
+      const host = document.getElementById('strategyCards');
+      if (host) {{
+        host.innerHTML = cards.map(([title, body]) => `<div class="reason-card"><div class="reason-title">${{title}}</div><p>${{body}}</p></div>`).join('');
+      }}
     }}
     const okxHosts = ['https://openapi.okx.com', 'https://www.okx.com'];
     const okxUrl = (host, path) => `${{host}}${{path}}${{path.includes('?') ? '&' : '?'}}_=${{Date.now()}}`;
@@ -583,6 +671,7 @@ def render_report(
       const volumeBase = volumeSlice.reduce((a, c) => a + c.quoteVolume, 0) / Math.max(volumeSlice.length, 1);
       const volumeRatio = volumeBase && latestCandle ? latestCandle.quoteVolume / volumeBase : 1;
       setText('liveLatestPrice', fmtPrice(latest));
+      setText('livePriceSource', `${{snapshot.source}} · ${{fmtTime(new Date())}}`);
       setText('liveChange15m', fmtPct(pct(latest, c15.length >= 2 ? c15[c15.length - 2].close : latest)));
       setText('liveChange1h', fmtPct(pct(latest, c1h.length >= 2 ? c1h[c1h.length - 2].close : latest)));
       setText('liveChange4h', fmtPct(pct(latest, c4h.length >= 2 ? c4h[c4h.length - 2].close : latest)));
@@ -590,6 +679,7 @@ def render_report(
       setText('liveFunding', fmtPct(snapshot.funding));
       setText('liveOpenInterest', fmtPrice(snapshot.openInterest));
       setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：${{snapshot.source}}`);
+      updateLiveStrategyBasis(snapshot);
       updateSimplePlan(latest, support, resistance, snapshot.source);
       setText('liveFetchMeta', `实时抓取状态：成功 · ${{snapshot.source}} · 标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}} · 模式：${{reason}}`);
       const status = document.getElementById('liveStatus');
@@ -690,6 +780,7 @@ def render_report(
         const addBudget = positionConfig.accountEquity * positionConfig.maxSingleAddPct;
 
         setText('liveLatestPrice', fmtPrice(latest));
+        setText('livePriceSource', `OKX REST现场抓取 · ${{fmtTime(new Date())}}`);
         setText('liveChange15m', fmtPct(pct(latest, c15.length >= 2 ? c15[c15.length - 2].close : latest)));
         setText('liveChange1h', fmtPct(pct(latest, c1h.length >= 2 ? c1h[c1h.length - 2].close : latest)));
         setText('liveChange4h', fmtPct(pct(latest, c4h.length >= 2 ? c4h[c4h.length - 2].close : latest)));
@@ -697,6 +788,7 @@ def render_report(
         setText('liveFunding', fmtPct(funding));
         setText('liveOpenInterest', fmtPrice(openInterest));
         setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：浏览器现场抓取`);
+        updateLiveStrategyBasis({{ latest, funding, openInterest, c15, c1h, c4h, source: 'OKX REST现场抓取' }});
         updateSimplePlan(latest, support, resistance, 'OKX REST现场抓取');
         const softWarnings = [fundingResult, oiResult].filter(item => !item.ok).map(item => `${{item.label}}失败：${{item.error}}`);
         setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}} · 模式：${{reason}}${{softWarnings.length ? ' · 部分数据缺失：' + softWarnings.join('；') : ''}}`);
@@ -739,6 +831,7 @@ def render_report(
               if (latest > 0) {{
                 websocketHasLivePrice = true;
                 setText('liveLatestPrice', fmtPrice(latest));
+                setText('livePriceSource', `OKX WebSocket实时推送 · ${{fmtTime(new Date())}}`);
                 updateSimplePlan(latest, liveSupport, liveResistance, 'OKX WebSocket实时推送');
                 setText('liveFetchMeta', `实时抓取状态：WebSocket成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}`);
               }}
@@ -772,6 +865,7 @@ def render_report(
       }}
     }}
     refreshLiveMarket('page-load');
+    refreshAccount('page-load');
     startOkxWebSocket();
     setInterval(() => {{
       if (document.visibilityState !== 'hidden' && !websocketHasLivePrice) refreshLiveMarket('REST-15s-fallback');
@@ -780,7 +874,9 @@ def render_report(
       if (document.visibilityState !== 'hidden' && websocketHasLivePrice) refreshLiveMarket('REST-60s-sync');
     }}, 60000);
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshLiveMarket('page-visible'); }});
-    window.addEventListener('focus', () => refreshLiveMarket('window-focus'));
+    document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshAccount('page-visible'); }});
+    window.addEventListener('focus', () => {{ refreshLiveMarket('window-focus'); refreshAccount('window-focus'); }});
+    setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshAccount('account-60s-sync'); }}, 60000);
   </script>
 </body>
 </html>

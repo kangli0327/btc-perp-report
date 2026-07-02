@@ -2,7 +2,8 @@ import unittest
 
 from btc_report.advice import build_advice
 from btc_report.config import PositionConfig, PositionSide, PreferenceConfig
-from btc_report.indicators import Indicators, macd, rsi
+from btc_report.binance import MarketData
+from btc_report.indicators import Indicators, compute_indicators, macd, rsi
 
 
 def pref() -> PreferenceConfig:
@@ -30,6 +31,39 @@ class IndicatorStrategyTest(unittest.TestCase):
         down = [150 - i * 0.8 for i in range(60)]
         self.assertGreater(macd(up)[2], 0)
         self.assertLess(macd(down)[2], 0)
+
+    def test_extended_indicators_include_ema_atr_and_vwap(self):
+        candles = []
+        for i in range(130):
+            price = 50000 + i * 20
+            candles.append(
+                {
+                    "open_time": i,
+                    "open": price - 10,
+                    "high": price + 80,
+                    "low": price - 70,
+                    "close": price,
+                    "volume": 10,
+                    "close_time": i,
+                    "quote_volume": 100000 + i * 100,
+                }
+            )
+        data = MarketData(
+            symbol="BTCUSDT",
+            source="test",
+            klines_15m=candles,
+            klines_4h=candles,
+            klines_1h=candles,
+            funding_rates=[{"time": 1, "rate": 0.0001}],
+            open_interest=100000,
+            mark_price=candles[-1]["close"],
+            index_price=candles[-1]["close"],
+            data_warnings=[],
+        )
+        ind = compute_indicators(data)
+        self.assertIn("EMA", ind.ema_state_4h)
+        self.assertGreater(ind.atr_15m, 0)
+        self.assertGreater(ind.vwap_24h, 0)
 
     def test_strategy_outputs_short_only_when_multi_timeframe_bearish(self):
         ind = Indicators(

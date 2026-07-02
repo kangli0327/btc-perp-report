@@ -22,6 +22,7 @@ class Advice:
     trade_mode: str = "观望"
     strategy_reason: str = ""
     entry_conditions: list[str] | None = None
+    strategy_cards: list[tuple[str, str]] | None = None
 
 
 def _money(value: float) -> str:
@@ -78,6 +79,20 @@ def _strategy_scores(position: PositionConfig, ind: Indicators, liq_gap_pct: flo
         short_score += 12
         conditions.append("4小时均线空头排列，空单只等反弹受阻或跌破确认")
 
+    if ind.ema_state_4h in {"EMA多头排列", "EMA偏多"}:
+        long_score += 12
+        reasons.append(f"4小时{ind.ema_state_4h}，大周期更支持顺势做多")
+    elif ind.ema_state_4h in {"EMA空头排列", "EMA偏空"}:
+        short_score += 12
+        reasons.append(f"4小时{ind.ema_state_4h}，大周期更支持顺势做空")
+
+    if ind.price_vs_vwap_pct > 0.25:
+        long_score += 5
+        reasons.append("价格在日内VWAP上方，日内资金成本对多头更友好")
+    elif ind.price_vs_vwap_pct < -0.25:
+        short_score += 5
+        reasons.append("价格在日内VWAP下方，日内资金成本对空头更友好")
+
     if ind.funding_rate_pct > 0.02 and ind.change_1h_pct < 0:
         short_score += 8
         reasons.append("资金费率偏正但价格走弱，多头拥挤偏利空")
@@ -90,6 +105,11 @@ def _strategy_scores(position: PositionConfig, ind: Indicators, liq_gap_pct: flo
         risk_score += 30
     elif ind.risk_level == "中":
         risk_score += 15
+    if ind.atr_15m_pct > 0.6:
+        risk_score += 15
+        conditions.append("15分钟ATR偏大，止损要按波动放宽，但仓位必须同步缩小")
+    elif ind.atr_15m_pct < 0.18:
+        conditions.append("15分钟ATR偏小，行情可能横盘，突破前不要提前重仓")
     if position.liquidation_price and liq_gap_pct < 1.2:
         risk_score += 60
     elif position.liquidation_price and liq_gap_pct < 3:
@@ -131,6 +151,61 @@ def _nearest_stop_for_long(position: PositionConfig, ind: Indicators) -> float:
     if position.liquidation_price:
         candidates.append(position.liquidation_price * 1.003)
     return max(c for c in candidates if c < ind.latest_price)
+
+
+def _macd_words(value: float) -> str:
+    if value > 0:
+        return "MACD红柱，短线动能偏多"
+    if value < 0:
+        return "MACD绿柱，短线动能偏空"
+    return "MACD接近零轴，动能不明显"
+
+
+def _rsi_words(value: float) -> str:
+    if value >= 70:
+        return "RSI进入超买区，追多容易被回落扫到"
+    if value <= 30:
+        return "RSI进入超卖区，追空容易遇到反弹"
+    if value > 55:
+        return "RSI偏强，多头有一定主动权"
+    if value < 45:
+        return "RSI偏弱，空头有一定主动权"
+    return "RSI在中间区，方向优势不明显"
+
+
+def _strategy_cards(ind: Indicators, trade_mode: str, liq_gap_pct: float) -> list[tuple[str, str]]:
+    direction = (
+        f"4小时{ind.ema_state_4h}，{_rsi_words(ind.rsi_4h)}；这决定了大方向过滤，逆势单只做短线，不适合重仓硬扛。"
+    )
+    momentum = (
+        f"1小时{_macd_words(ind.macd_hist_1h)}，15分钟{_macd_words(ind.macd_hist_15m)}；如果两个周期同向，入场可信度更高，冲突时先等下一根15分钟K线确认。"
+    )
+    volume = (
+        f"15分钟成交量是均量的{ind.volume_ratio_15m:.2f}倍，1小时成交量是均量的{ind.volume_ratio_1h:.2f}倍；{ind.position_context}。"
+    )
+    location = (
+        f"当前支撑约{_price(ind.support)}，阻力约{_price(ind.resistance)}，日内VWAP约{_price(ind.vwap_24h)}；价格相对VWAP {ind.price_vs_vwap_pct:+.2f}%，用来判断是在资金平均成本上方还是下方。"
+    )
+    volatility = (
+        f"15分钟ATR约{_price(ind.atr_15m)} USDT（{ind.atr_15m_pct:.2f}%）；止损不能小于正常波动，若止损太远则必须缩小保证金。"
+    )
+    funding = (
+        f"资金费率{ind.funding_rate_pct:+.3f}%；正费率且价格走弱偏利空，负费率且价格抗跌偏利多，极端费率说明一边太拥挤。"
+    )
+    risk = (
+        f"最终模式：{trade_mode}。100x下优先看止损和强平，距离强平约{liq_gap_pct:.2f}%时，不管指标多漂亮都不能无条件加仓。"
+        if liq_gap_pct
+        else f"最终模式：{trade_mode}。100x下必须先确定止损，再决定保证金大小。"
+    )
+    return [
+        ("大方向", direction),
+        ("短线动能", momentum),
+        ("量价关系", volume),
+        ("位置判断", location),
+        ("波动率", volatility),
+        ("资金情绪", funding),
+        ("风险结论", risk),
+    ]
 
 
 def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicators) -> Advice:
@@ -258,4 +333,5 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
         trade_mode=trade_mode,
         strategy_reason=strategy_reason,
         entry_conditions=entry_conditions,
+        strategy_cards=_strategy_cards(ind, trade_mode, liq_gap_pct),
     )
