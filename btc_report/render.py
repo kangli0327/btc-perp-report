@@ -37,6 +37,20 @@ def chart_points(data: MarketData) -> str:
     return json.dumps(values, ensure_ascii=False)
 
 
+def sprint_stage(equity_usdt: float) -> dict[str, float | str]:
+    equity_cny = equity_usdt * 7.2
+    stages: list[dict[str, float | str]] = [
+        {"name": "阶段1：5000 -> 10000元", "min": 0.0, "max": 10000.0, "risk": 0.035, "daily": 0.10, "leverage": "3x-8x"},
+        {"name": "阶段2：10000 -> 30000元", "min": 10000.0, "max": 30000.0, "risk": 0.030, "daily": 0.08, "leverage": "3x-6x"},
+        {"name": "阶段3：30000 -> 100000元", "min": 30000.0, "max": 100000.0, "risk": 0.020, "daily": 0.06, "leverage": "2x-5x"},
+        {"name": "阶段4：100000 -> 300000元", "min": 100000.0, "max": 300000.0, "risk": 0.015, "daily": 0.04, "leverage": "1x-3x"},
+    ]
+    for stage in stages:
+        if equity_cny < float(stage["max"]):
+            return stage
+    return stages[-1]
+
+
 def render_report(
     generated_at: datetime,
     market: MarketData,
@@ -87,6 +101,29 @@ def render_report(
     else:
         liq_gap = 0.0
     liq_state = "危险" if position.liquidation_price and liq_gap < 1.2 else "偏紧" if position.liquidation_price and liq_gap < 3 else "正常"
+    sprint = sprint_stage(position.account_equity_usdt)
+    single_risk_usdt = position.account_equity_usdt * float(sprint["risk"])
+    daily_risk_usdt = position.account_equity_usdt * float(sprint["daily"])
+    target_progress = min(position.account_equity_usdt * 7.2 / 300000 * 100, 100)
+    macro_high_soon = any(
+        event.impact in {"高", "中高"} and 0 <= (event.scheduled_at.astimezone(CN_TZ) - generated_at).total_seconds() <= 30 * 60
+        for event in macro_brief.events
+    )
+    if liq_state == "危险":
+        sprint_status = "禁止开新仓"
+        sprint_reason = "强平距离过近，先减仓或设置硬止损。"
+    elif macro_high_soon:
+        sprint_status = "只管理持仓"
+        sprint_reason = "距离高影响宏观数据不足30分钟，暂停开新仓。"
+    elif indicators.risk_level == "高":
+        sprint_status = "轻仓交易"
+        sprint_reason = "波动风险偏高，只允许小仓位按计划执行。"
+    elif active_side != "flat":
+        sprint_status = "持仓优先"
+        sprint_reason = "已有合约仓位，先执行止盈止损，再考虑新增方向。"
+    else:
+        sprint_status = "可等待触发"
+        sprint_reason = "无持仓时只在关键支撑阻力触发，不追中间价。"
 
     position_json = json.dumps(
         {
@@ -105,6 +142,8 @@ def render_report(
             "liquidationPrice": position.liquidation_price,
             "accountEquity": position.account_equity_usdt,
             "maxSingleAddPct": preference.max_single_add_pct,
+            "sprintSingleRisk": single_risk_usdt,
+            "sprintDailyRisk": daily_risk_usdt,
         },
         ensure_ascii=False,
     )
@@ -132,6 +171,18 @@ def render_report(
     .span-4 {{ grid-column:span 4; }} .span-6 {{ grid-column:span 6; }}
     .hero {{ border-left:5px solid var(--accent); }}
     .headline {{ font-size:23px; font-weight:760; margin:0 0 10px; }}
+    .sprint {{ background:#0f172a; color:#f8fafc; border-color:#1e293b; }}
+    .sprint h2 {{ color:#fff; }}
+    .sprint-top {{ display:grid; grid-template-columns:1.2fr .8fr; gap:14px; align-items:start; }}
+    .sprint-status {{ font-size:28px; line-height:1.08; font-weight:820; margin:0 0 8px; }}
+    .sprint-reason {{ color:#cbd5e1; margin:0; }}
+    .sprint-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:14px; }}
+    .sprint-item {{ background:#111827; border:1px solid #334155; border-radius:8px; padding:10px; }}
+    .sprint-item .label {{ color:#94a3b8; }}
+    .sprint-item .value {{ color:#fff; font-size:20px; }}
+    .progress {{ width:100%; height:9px; background:#1e293b; border-radius:999px; overflow:hidden; margin-top:10px; }}
+    .progress span {{ display:block; height:100%; background:#22c55e; border-radius:999px; }}
+    .sprint-warning {{ color:#fde68a; font-size:13px; margin-top:10px; }}
     .pill {{ display:inline-flex; align-items:center; min-height:28px; border-radius:999px; padding:3px 10px; background:#e8f3f1; color:#0b635d; font-weight:700; font-size:13px; margin:0 6px 6px 0; }}
     .risk-high {{ background:#fee4e2; color:var(--danger); }} .risk-mid {{ background:#fef0c7; color:var(--warn); }} .risk-low {{ background:#dcfae6; color:var(--good); }}
     .label {{ color:var(--muted); font-size:13px; margin-bottom:3px; }}
@@ -164,7 +215,7 @@ def render_report(
     .small {{ color:var(--muted); font-size:13px; }}
     .plan {{ border-left:4px solid #475467; }}
     footer {{ padding:18px 14px 30px; color:var(--muted); text-align:center; font-size:13px; }}
-    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:19px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:18px; }} .pnl-value,.okx-value {{ font-size:23px; }} .position-grid {{ column-gap:14px; row-gap:24px; }} }}
+    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:19px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:18px; }} .pnl-value,.okx-value {{ font-size:23px; }} .position-grid {{ column-gap:14px; row-gap:24px; }} }}
     @media (max-width:430px) {{ .contract-title {{ font-size:23px; }} .position-head {{ grid-template-columns:1fr; }} .pnl-box {{ text-align:left; }} .position-grid {{ grid-template-columns:repeat(2,1fr); }} }}
   </style>
 </head>
@@ -175,6 +226,34 @@ def render_report(
     <div class="meta" id="liveFetchMeta">实时抓取状态：等待浏览器执行</div>
   </header>
   <main>
+    <section class="sprint">
+      <h2>冲刺账户模式</h2>
+      <div class="sprint-top">
+        <div>
+          <div class="sprint-status" id="sprintStatus">{html.escape(sprint_status)}</div>
+          <p class="sprint-reason" id="sprintReason">{html.escape(sprint_reason)}</p>
+          <div class="progress" aria-label="冲刺目标进度"><span style="width:{target_progress:.2f}%"></span></div>
+          <div class="sprint-warning">目标：5000元 -> 300000元；当前进度按 1 USDT≈7.2元估算，不作为汇率承诺。</div>
+        </div>
+        <div>
+          <div class="sprint-item">
+            <div class="label">今天只看这一句</div>
+            <div class="value" id="sprintOneLine">{html.escape(sprint_status)}：{html.escape(sprint_reason)}</div>
+          </div>
+        </div>
+      </div>
+      <div class="sprint-grid">
+        <div class="sprint-item"><div class="label">当前阶段</div><div class="value">{html.escape(str(sprint["name"]))}</div></div>
+        <div class="sprint-item"><div class="label">账户权益</div><div class="value" id="sprintEquity">{fmt_price(position.account_equity_usdt)} USDT</div></div>
+        <div class="sprint-item"><div class="label">单笔最大亏损</div><div class="value" id="sprintSingleRisk">{fmt_price(single_risk_usdt)} USDT</div></div>
+        <div class="sprint-item"><div class="label">今日最大亏损</div><div class="value" id="sprintDailyRisk">{fmt_price(daily_risk_usdt)} USDT</div></div>
+        <div class="sprint-item"><div class="label">建议有效杠杆</div><div class="value" id="sprintLeverage">{html.escape(str(sprint["leverage"]))}</div></div>
+        <div class="sprint-item"><div class="label">强平距离</div><div class="value" id="sprintLiqGap">{liq_gap:.2f}%</div></div>
+        <div class="sprint-item"><div class="label">本次最大保证金</div><div class="value" id="sprintMaxMargin">{fmt_price(single_risk_usdt * 6)} USDT</div></div>
+        <div class="sprint-item"><div class="label">交易纪律</div><div class="value">亏损触线停手</div></div>
+      </div>
+    </section>
+
     <section class="hero">
       <div class="headline">{html.escape(advice.headline)}</div>
       <span class="pill">方向：{html.escape(advice.bias)}</span>
@@ -343,6 +422,30 @@ def render_report(
         liqState.classList.toggle('danger', state === '危险');
         liqState.classList.toggle('warn', state === '偏紧');
       }}
+      updateSprintUi(latest, liqGap, state);
+    }}
+    function updateSprintUi(latest, liqGap, liqState) {{
+      const hasPosition = positionConfig.activeSide !== 'flat' && Number(positionConfig.activeQty || 0) > 0;
+      let status = '可等待触发';
+      let reason = '无持仓时只在关键支撑阻力触发，不追中间价。';
+      if (liqState === '危险') {{
+        status = '禁止开新仓';
+        reason = '强平距离过近，先减仓或设置硬止损。';
+      }} else if (liqState === '偏紧') {{
+        status = '只减不加';
+        reason = '强平距离偏紧，禁止加仓，优先保护保证金。';
+      }} else if (hasPosition) {{
+        status = '持仓优先';
+        reason = '已有合约仓位，先执行止盈止损，再考虑新增方向。';
+      }}
+      setText('sprintStatus', status);
+      setText('sprintReason', reason);
+      setText('sprintOneLine', `${{status}}：${{reason}}`);
+      setText('sprintLiqGap', Number.isFinite(liqGap) ? `${{liqGap.toFixed(2)}}%` : '-');
+      setText('sprintEquity', `${{fmtPrice(positionConfig.accountEquity)}} USDT`);
+      setText('sprintSingleRisk', `${{fmtPrice(positionConfig.sprintSingleRisk)}} USDT`);
+      setText('sprintDailyRisk', `${{fmtPrice(positionConfig.sprintDailyRisk)}} USDT`);
+      setText('sprintMaxMargin', `${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT`);
     }}
     let liveSupport = {indicators.support};
     let liveResistance = {indicators.resistance};
