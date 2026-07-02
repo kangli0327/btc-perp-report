@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 import re
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
@@ -133,7 +133,7 @@ def _parse_nyfed_calendar(page: str, now: datetime) -> list[MacroEvent]:
                 hour, minute = [int(x) for x in time_text.split(":")]
             scheduled = datetime(year, month, day, hour, minute, tzinfo=ET)
             impact, btc_view = profile
-            events.append(MacroEvent(title, "New York Fed Economic Calendar", _absolute_url(href), scheduled, impact, btc_view))
+            events.append(MacroEvent(title, "纽约联储经济日历", _absolute_url(href), scheduled, impact, btc_view))
     return events
 
 
@@ -148,17 +148,92 @@ def _curated_events() -> list[MacroEvent]:
     return [
         MacroEvent(
             title="美国6月非农就业报告：非农、失业率、平均时薪、初请失业金",
-            source="BLS / Trading Economics / Kiplinger",
+            source="美国劳工统计局 / 交易经济网站 / Kiplinger经济日历",
             url=BLS_EMPSIT_URL,
             scheduled_at=datetime(2026, 7, 2, 8, 30, tzinfo=ET),
             impact="高",
             btc_view="重点看“就业强度 + 薪资通胀”组合。强就业/强薪资压制降息预期，弱就业/温和薪资有利流动性预期。",
-            expected="市场预期：非农约110K-115K；失业率4.3%；平均时薪MoM 0.3%；平均时薪YoY 3.5%；初请失业金约220K。",
-            previous="前值：5月非农172K；失业率4.3%；平均时薪MoM 0.3%、YoY 3.4%；初请215K。",
-            my_forecast="我的基准判断：非农100K-120K，中心值约110K；失业率大概率维持4.3%；薪资MoM约0.3%。劳动力市场偏稳但降温，不像明显衰退信号。",
+            expected="市场预期：非农约110K-115K；失业率4.3%；平均时薪环比0.3%；平均时薪同比3.5%；初请失业金约220K。",
+            previous="前值：5月非农172K；失业率4.3%；平均时薪环比0.3%、同比3.4%；初请215K。",
+            my_forecast="我的基准判断：非农100K-120K，中心值约110K；失业率大概率维持4.3%；薪资环比约0.3%。劳动力市场偏稳但降温，不像明显衰退信号。",
             btc_direction="BTC方向：若非农>130K且薪资>=0.3%，美元和美债收益率易走强，短线偏利空BTC；若非农80K-120K且薪资不超预期，偏震荡略利多；若非农<80K或失业率升至4.4%+，先利多降息交易，但若美股同步转弱，BTC可能先冲高后回落。",
         )
     ]
+
+
+def _analysis_for_event(event: MacroEvent) -> MacroEvent:
+    title = event.title.lower()
+    if "initial claims" in title:
+        return replace(
+            event,
+            title="美国初请失业金人数",
+            expected=event.expected or "市场预期：约220K；若高于预期，说明就业降温更明显；若低于预期，说明劳动力市场仍偏紧。",
+            previous=event.previous or "前值：约215K。",
+            my_forecast=event.my_forecast or "我的判断：220K-225K，略高于前值但仍未到明显衰退区间，更像温和降温。",
+            btc_direction=event.btc_direction or "BTC方向：若初请>235K，短线偏利多降息交易，但要防衰退避险；若初请<210K，说明就业仍强，美元和美债收益率可能走强，偏利空BTC；215K-230K区间则影响中性，需等待非农主数据。",
+        )
+    if "employment situation" in title:
+        return replace(
+            event,
+            title="美国就业形势报告",
+            expected=event.expected or "市场预期：非农约110K-115K；失业率4.3%；平均时薪环比0.3%；平均时薪同比3.5%。",
+            previous=event.previous or "前值：5月非农172K；失业率4.3%；平均时薪环比0.3%、同比3.4%。",
+            my_forecast=event.my_forecast or "我的判断：非农100K-120K，中心值约110K；失业率大概率维持4.3%；薪资环比约0.3%。就业偏稳但降温。",
+            btc_direction=event.btc_direction or "BTC方向：非农>130K且薪资不降温，偏利空BTC；非农80K-120K且薪资温和，偏震荡略利多；非农<80K或失业率升至4.4%+，先利多降息预期，但要防风险资产回落。",
+        )
+    if "consumer price index" in title or "cpi" in title:
+        return replace(
+            event,
+            title="美国CPI通胀数据",
+            expected=event.expected or "市场预期：关注核心CPI月率和年率是否继续降温，具体以数据公布前最新一致预期为准。",
+            previous=event.previous or "前值：以前次CPI公布值为基准比较。",
+            my_forecast=event.my_forecast or "我的判断：若能源和房租分项未反弹，核心通胀大概率温和；但服务通胀仍是风险点。",
+            btc_direction=event.btc_direction or "BTC方向：CPI高于预期偏利空BTC；低于预期偏利多BTC；若总体低但核心粘性强，可能先涨后回落。",
+        )
+    if "producer price index" in title or "ppi" in title:
+        return replace(
+            event,
+            title="美国PPI生产者价格指数",
+            expected=event.expected or "市场预期：关注PPI月率是否温和，以及是否向PCE通胀传导。",
+            previous=event.previous or "前值：以前次PPI公布值为基准比较。",
+            my_forecast=event.my_forecast or "我的判断：PPI通常对BTC影响弱于CPI，但若明显超预期，会推高通胀担忧。",
+            btc_direction=event.btc_direction or "BTC方向：PPI强于预期偏利空BTC；弱于预期偏利多BTC；接近预期则影响有限。",
+        )
+    if "pce" in title or "personal income" in title:
+        return replace(
+            event,
+            title="美国PCE/个人收入消费数据",
+            expected=event.expected or "市场预期：重点看核心PCE月率、个人收入和消费支出是否降温。",
+            previous=event.previous or "前值：以前次PCE、收入和消费公布值为基准比较。",
+            my_forecast=event.my_forecast or "我的判断：若核心PCE温和且消费放缓，市场更容易交易降息；若收入消费强，会压制降息预期。",
+            btc_direction=event.btc_direction or "BTC方向：核心PCE低于预期偏利多BTC；高于预期偏利空BTC；消费过弱可能触发衰退交易，BTC波动会放大。",
+        )
+    if "gdp" in title or "gross domestic product" in title:
+        return replace(
+            event,
+            title="美国GDP增长数据",
+            expected=event.expected or "市场预期：关注实际GDP年化增速是否高于或低于一致预期。",
+            previous=event.previous or "前值：以前次GDP公布值为基准比较。",
+            my_forecast=event.my_forecast or "我的判断：增长温和放缓对BTC相对友好；过热会压制降息交易，过冷会触发避险。",
+            btc_direction=event.btc_direction or "BTC方向：GDP明显强于预期偏利空BTC；温和低于预期偏利多；大幅低于预期则可能先利多后因避险回落。",
+        )
+    if "ism" in title:
+        return replace(
+            event,
+            title="美国ISM景气指数",
+            expected=event.expected or "市场预期：重点看总指数、新订单、就业和价格分项。",
+            previous=event.previous or "前值：以前次ISM公布值为基准比较。",
+            my_forecast=event.my_forecast or "我的判断：价格分项比总指数更容易影响美债收益率；就业分项会影响非农预期。",
+            btc_direction=event.btc_direction or "BTC方向：ISM价格和就业分项强，偏利空BTC；价格降温且增长不崩，偏利多BTC；总指数大幅走弱则要防避险。",
+        )
+    return replace(
+        event,
+        title=event.title,
+        expected=event.expected or "市场预期：暂无已接入的精确一致预期，需以公布前最新经济日历为准。",
+        previous=event.previous or "前值：暂无已接入的前值。",
+        my_forecast=event.my_forecast or "我的判断：该事件可能影响美元、美债收益率和风险偏好，公布前后BTC波动会放大。",
+        btc_direction=event.btc_direction or "BTC方向：若数据强化高利率/强美元预期，偏利空BTC；若强化降息和流动性宽松预期，偏利多BTC。",
+    )
 
 
 def build_macro_brief(generated_at: datetime) -> MacroBrief:
@@ -190,11 +265,15 @@ def build_macro_brief(generated_at: datetime) -> MacroBrief:
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(event)
+        deduped.append(_analysis_for_event(event))
 
     if deduped:
         high_count = sum(1 for event in deduped if event.impact in {"高", "中高"})
-        directional = next((event for event in deduped if event.btc_direction), deduped[0])
+        directional = next((event for event in deduped if "非农" in event.title), None)
+        if directional is None:
+            directional = next((event for event in deduped if "就业形势" in event.title), None)
+        if directional is None:
+            directional = next((event for event in deduped if event.btc_direction), deduped[0])
         summary = f"未来24小时识别到 {len(deduped)} 个宏观事件，其中 {high_count} 个为高/中高影响。重点关注：{directional.title}。"
         forecast = directional.btc_direction or "事件窗口内 BTC 可能放大波动；高杠杆短线仓位应提前设置止损，避免在数据公布前后追单。"
     else:

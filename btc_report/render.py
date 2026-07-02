@@ -356,6 +356,7 @@ def render_report(
     }}
     const okxHosts = ['https://openapi.okx.com', 'https://www.okx.com'];
     const okxUrl = (host, path) => `${{host}}${{path}}${{path.includes('?') ? '&' : '?'}}_=${{Date.now()}}`;
+    const withCacheBust = url => `${{url}}${{url.includes('?') ? '&' : '?'}}_=${{Date.now()}}`;
     async function fetchJson(label, path) {{
       const errors = [];
       for (const host of okxHosts) {{
@@ -371,6 +372,19 @@ def render_report(
       }}
       throw new Error(`${{label}} all OKX hosts failed: ${{errors.join(' | ')}}`);
     }}
+    async function fetchAbsoluteJson(label, urls) {{
+      const errors = [];
+      for (const url of urls) {{
+        try {{
+          const response = await fetch(withCacheBust(url), {{ cache: 'no-store' }});
+          if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+          return await response.json();
+        }} catch (error) {{
+          errors.push(`${{url}}: ${{String(error)}}`);
+        }}
+      }}
+      throw new Error(`${{label}} failed: ${{errors.join(' | ')}}`);
+    }}
     async function fetchJsonSoft(label, path) {{
       try {{
         return {{ ok: true, label, payload: await fetchJson(label, path) }};
@@ -380,6 +394,12 @@ def render_report(
     }}
     function parseCandles(rows) {{
       return rows.slice().reverse().map(row => ({{ high:Number(row[2]), low:Number(row[3]), close:Number(row[4]), quoteVolume:Number(row[7] || 0) }}));
+    }}
+    function parseForwardCandles(rows) {{
+      return rows.map(row => ({{ high:Number(row[2]), low:Number(row[3]), close:Number(row[4]), quoteVolume:Number(row[7] || row[5] || 0) }}));
+    }}
+    function parseReverseCandles(rows) {{
+      return rows.slice().reverse().map(row => ({{ high:Number(row[2]), low:Number(row[3]), close:Number(row[4]), quoteVolume:Number(row[6] || row[5] || 0) }}));
     }}
     function lastItem(items) {{
       return items && items.length ? items[items.length - 1] : null;
@@ -393,6 +413,84 @@ def render_report(
       const candidates = [support * 0.997, latest * 0.994];
       if (positionConfig.liquidationPrice) candidates.push(positionConfig.liquidationPrice * 1.003);
       return Math.max(...candidates.filter(v => v < latest));
+    }}
+    function applyLiveSnapshot(snapshot, reason) {{
+      const c15 = snapshot.c15;
+      const c1h = snapshot.c1h;
+      const c4h = snapshot.c4h;
+      const latest = snapshot.latest;
+      const latestCandle = lastItem(c15);
+      const support = Math.min(...c15.slice(-24).map(c => c.low));
+      const resistance = Math.max(...c15.slice(-24).map(c => c.high));
+      liveSupport = support;
+      liveResistance = resistance;
+      const returns = c15.slice(1).map((c, i) => pct(c.close, c15[i].close));
+      const avg = returns.reduce((a, b) => a + b, 0) / Math.max(returns.length, 1);
+      const vol = Math.sqrt(returns.reduce((a, b) => a + (b - avg) ** 2, 0) / Math.max(returns.length, 1));
+      const volumeSlice = c15.slice(-33, -1);
+      const volumeBase = volumeSlice.reduce((a, c) => a + c.quoteVolume, 0) / Math.max(volumeSlice.length, 1);
+      const volumeRatio = volumeBase && latestCandle ? latestCandle.quoteVolume / volumeBase : 1;
+      setText('liveLatestPrice', fmtPrice(latest));
+      setText('liveChange15m', fmtPct(pct(latest, c15.length >= 2 ? c15[c15.length - 2].close : latest)));
+      setText('liveChange1h', fmtPct(pct(latest, c1h.length >= 2 ? c1h[c1h.length - 2].close : latest)));
+      setText('liveChange4h', fmtPct(pct(latest, c4h.length >= 2 ? c4h[c4h.length - 2].close : latest)));
+      setText('liveFunding', fmtPct(snapshot.funding));
+      setText('liveOpenInterest', fmtPrice(snapshot.openInterest));
+      setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：${{snapshot.source}}`);
+      updateSimplePlan(latest, support, resistance, snapshot.source);
+      setText('liveFetchMeta', `实时抓取状态：成功 · ${{snapshot.source}} · 标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}} · 模式：${{reason}}`);
+      const status = document.getElementById('liveStatus');
+      if (status) status.innerHTML = `<li>本次已现场获取行情；数据源：${{snapshot.source}}；触发方式：${{reason}}；手机端会在OKX失败后自动尝试Binance和Bybit。</li>`;
+    }}
+    async function fetchBinanceSnapshot() {{
+      const [premium, c15Raw, c1hRaw, c4hRaw, oiRaw] = await Promise.all([
+        fetchAbsoluteJson('Binance mark price', ['https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT']),
+        fetchAbsoluteJson('Binance 15m candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=15m&limit=96']),
+        fetchAbsoluteJson('Binance 1h candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=24']),
+        fetchAbsoluteJson('Binance 4h candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=8']),
+        fetchAbsoluteJson('Binance open interest', ['https://fapi.binance.com/fapi/v1/openInterest?symbol=BTCUSDT'])
+      ]);
+      return {{
+        source: '币安U本位永续REST备用',
+        latest: Number(premium.markPrice || premium.indexPrice || 0),
+        funding: Number(premium.lastFundingRate || 0) * 100,
+        openInterest: Number(oiRaw.openInterest || NaN),
+        c15: parseForwardCandles(c15Raw || []),
+        c1h: parseForwardCandles(c1hRaw || []),
+        c4h: parseForwardCandles(c4hRaw || [])
+      }};
+    }}
+    async function fetchBybitSnapshot() {{
+      const [ticker, c15Raw, c1hRaw, c4hRaw] = await Promise.all([
+        fetchAbsoluteJson('Bybit ticker', ['https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT']),
+        fetchAbsoluteJson('Bybit 15m candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=15&limit=96']),
+        fetchAbsoluteJson('Bybit 1h candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=24']),
+        fetchAbsoluteJson('Bybit 4h candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=240&limit=8'])
+      ]);
+      const row = ticker.result && ticker.result.list && ticker.result.list.length ? ticker.result.list[0] : {{}};
+      return {{
+        source: 'Bybit U本位永续REST备用',
+        latest: Number(row.markPrice || row.lastPrice || 0),
+        funding: Number(row.fundingRate || 0) * 100,
+        openInterest: Number(row.openInterest || NaN),
+        c15: parseReverseCandles((c15Raw.result && c15Raw.result.list) || []),
+        c1h: parseReverseCandles((c1hRaw.result && c1hRaw.result.list) || []),
+        c4h: parseReverseCandles((c4hRaw.result && c4hRaw.result.list) || [])
+      }};
+    }}
+    async function refreshFallbackMarket(reason, originalError) {{
+      const errors = [`OKX失败：${{String(originalError)}}`];
+      for (const loader of [fetchBinanceSnapshot, fetchBybitSnapshot]) {{
+        try {{
+          const snapshot = await loader();
+          if (!snapshot.latest || !snapshot.c15.length || !snapshot.c1h.length || !snapshot.c4h.length) throw new Error('备用源数据不完整');
+          applyLiveSnapshot(snapshot, reason);
+          return;
+        }} catch (error) {{
+          errors.push(String(error));
+        }}
+      }}
+      throw new Error(errors.join(' | '));
     }}
     async function refreshLiveMarket(reason = 'page-load') {{
       if (liveRefreshInFlight) return;
@@ -451,9 +549,14 @@ def render_report(
         const status = document.getElementById('liveStatus');
         if (status) status.innerHTML = `<li>本次已现场获取 OKX 行情；触发方式：${{reason}}；WebSocket失败时会每15秒REST轮询。</li>${{softWarnings.map(item => `<li>${{item}}</li>`).join('')}}`;
       }} catch (error) {{
-        setText('liveFetchMeta', `实时抓取状态：失败 · ${{String(error)}} · ${{fmtTime(new Date())}}`);
-        const status = document.getElementById('liveStatus');
-        if (status) status.innerHTML = `<li>浏览器实时行情刷新失败：${{String(error)}}</li>`;
+        try {{
+          setText('liveFetchMeta', `实时抓取状态：OKX失败，正在尝试Binance/Bybit备用源 · ${{fmtTime(new Date())}}`);
+          await refreshFallbackMarket(`${{reason}}-multi-source`, error);
+        }} catch (fallbackError) {{
+          setText('liveFetchMeta', `实时抓取状态：失败 · ${{String(fallbackError)}} · ${{fmtTime(new Date())}}`);
+          const status = document.getElementById('liveStatus');
+          if (status) status.innerHTML = `<li>浏览器实时行情刷新失败：${{String(fallbackError)}}</li>`;
+        }}
       }} finally {{
         liveRefreshInFlight = false;
       }}
