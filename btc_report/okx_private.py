@@ -114,6 +114,17 @@ def _position_side(row: dict[str, Any], contract_size: float) -> PositionSide:
     )
 
 
+def _position_margin(row: dict[str, Any], leverage: float) -> float:
+    margin = _float(row.get("margin"))
+    if margin:
+        return margin
+    imr = _float(row.get("imr"))
+    if imr:
+        return imr
+    notional = _float(row.get("notionalUsd"))
+    return notional / max(leverage, 1.0) if notional else 0.0
+
+
 def fetch_okx_position() -> PositionConfig:
     balance = _private_get("/api/v5/account/balance", {"ccy": "USDT"})
     positions = _private_get("/api/v5/account/positions", {"instType": "SWAP", "instId": INST_ID})
@@ -137,7 +148,7 @@ def fetch_okx_position() -> PositionConfig:
         else:
             short = side
         liquidation_price = _float(row.get("liqPx")) or liquidation_price
-        initial_margin += _float(row.get("imr") or row.get("margin") or row.get("notionalUsd")) / max(side.leverage, 1.0)
+        initial_margin += _position_margin(row, side.leverage)
     return PositionConfig(
         account_equity_usdt=account_equity,
         available_margin_usdt=available_margin,
