@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ from .binance import fetch_market_data
 from .config import load_position, load_preference
 from .indicators import compute_indicators
 from .macro_events import build_macro_brief
+from .okx_private import fetch_okx_position
 from .render import render_report
 
 
@@ -22,7 +24,11 @@ REPORTS_DIR = SITE_DIR / "reports"
 def main() -> None:
     generated_at = datetime.now(tz=CN_TZ)
     archive_name = f"{generated_at:%Y-%m-%d-%H%M}.html"
-    position = load_position()
+    try:
+        position = fetch_okx_position()
+    except Exception as exc:  # noqa: BLE001
+        fallback_position = load_position()
+        position = replace(fallback_position, source_warning=f"OKX私有仓位同步失败，已使用手动仓位配置：{exc}")
     preference = load_preference()
     market = fetch_market_data("BTCUSDT")
     indicators = compute_indicators(market)

@@ -45,6 +45,9 @@ jobs:
         env:
           POSITION_CONFIG_JSON: ${{ secrets.POSITION_CONFIG_JSON }}
           PREFERENCE_CONFIG_JSON: ${{ secrets.PREFERENCE_CONFIG_JSON }}
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
+          OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
         run: python -m btc_report.generate
 
       - name: Upload Pages artifact
