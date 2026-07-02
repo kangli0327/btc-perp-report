@@ -15,6 +15,7 @@ CN_TZ = ZoneInfo("Asia/Shanghai")
 NYFED_URL = "https://www.newyorkfed.org/research/calendars/nationalecon_cal"
 FED_URL = "https://www.federalreserve.gov/newsevents/calendar.htm"
 BEA_URL = "https://www.bea.gov/news/schedule"
+BLS_EMPSIT_URL = "https://www.bls.gov/schedule/news_release/empsit.htm"
 
 HIGH_IMPACT = {
     "FOMC": ("高", "利率预期会直接影响美元流动性和风险资产估值，BTC 通常会放大波动。"),
@@ -42,6 +43,10 @@ class MacroEvent:
     scheduled_at: datetime
     impact: str
     btc_view: str
+    expected: str = ""
+    previous: str = ""
+    my_forecast: str = ""
+    btc_direction: str = ""
 
 
 @dataclass(frozen=True)
@@ -139,6 +144,23 @@ def _source_health(url: str, source: str, warnings: list[str]) -> None:
         warnings.append(f"{source} 获取失败：{exc}")
 
 
+def _curated_events() -> list[MacroEvent]:
+    return [
+        MacroEvent(
+            title="美国6月非农就业报告：非农、失业率、平均时薪、初请失业金",
+            source="BLS / Trading Economics / Kiplinger",
+            url=BLS_EMPSIT_URL,
+            scheduled_at=datetime(2026, 7, 2, 8, 30, tzinfo=ET),
+            impact="高",
+            btc_view="重点看“就业强度 + 薪资通胀”组合。强就业/强薪资压制降息预期，弱就业/温和薪资有利流动性预期。",
+            expected="市场预期：非农约110K-115K；失业率4.3%；平均时薪MoM 0.3%；平均时薪YoY 3.5%；初请失业金约220K。",
+            previous="前值：5月非农172K；失业率4.3%；平均时薪MoM 0.3%、YoY 3.4%；初请215K。",
+            my_forecast="我的基准判断：非农100K-120K，中心值约110K；失业率大概率维持4.3%；薪资MoM约0.3%。劳动力市场偏稳但降温，不像明显衰退信号。",
+            btc_direction="BTC方向：若非农>130K且薪资>=0.3%，美元和美债收益率易走强，短线偏利空BTC；若非农80K-120K且薪资不超预期，偏震荡略利多；若非农<80K或失业率升至4.4%+，先利多降息交易，但若美股同步转弱，BTC可能先冲高后回落。",
+        )
+    ]
+
+
 def build_macro_brief(generated_at: datetime) -> MacroBrief:
     start = generated_at.astimezone(CN_TZ)
     end = start + timedelta(hours=24)
@@ -152,6 +174,8 @@ def build_macro_brief(generated_at: datetime) -> MacroBrief:
 
     _source_health(FED_URL, "Federal Reserve 日程", warnings)
     _source_health(BEA_URL, "BEA 新闻日程", warnings)
+    _source_health(BLS_EMPSIT_URL, "BLS 就业报告日程", warnings)
+    events.extend(_curated_events())
 
     filtered = [
         event
@@ -159,13 +183,22 @@ def build_macro_brief(generated_at: datetime) -> MacroBrief:
         if start <= event.scheduled_at.astimezone(CN_TZ) <= end
     ]
     filtered.sort(key=lambda item: item.scheduled_at)
+    deduped: list[MacroEvent] = []
+    seen: set[tuple[str, str]] = set()
+    for event in filtered:
+        key = (event.title.lower(), event.scheduled_at.astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(event)
 
-    if filtered:
-        high_count = sum(1 for event in filtered if event.impact in {"高", "中高"})
-        summary = f"未来24小时识别到 {len(filtered)} 个宏观事件，其中 {high_count} 个为高/中高影响。"
-        forecast = "事件窗口内 BTC 可能放大波动；高杠杆短线仓位应提前设置止损，避免在数据公布前后追单。"
+    if deduped:
+        high_count = sum(1 for event in deduped if event.impact in {"高", "中高"})
+        directional = next((event for event in deduped if event.btc_direction), deduped[0])
+        summary = f"未来24小时识别到 {len(deduped)} 个宏观事件，其中 {high_count} 个为高/中高影响。重点关注：{directional.title}。"
+        forecast = directional.btc_direction or "事件窗口内 BTC 可能放大波动；高杠杆短线仓位应提前设置止损，避免在数据公布前后追单。"
     else:
         summary = "未来24小时未在已接入官方日历中识别到高影响宏观事件。"
         forecast = "若无临时新闻冲击，BTC 短线更可能由技术位、资金费率、持仓拥挤和美元流动性预期驱动。"
 
-    return MacroBrief(start, end, filtered[:8], summary, forecast, warnings)
+    return MacroBrief(start, end, deduped[:8], summary, forecast, warnings)

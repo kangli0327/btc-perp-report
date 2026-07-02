@@ -55,7 +55,11 @@ def render_report(
         f"<strong>{html.escape(event.scheduled_at.astimezone(CN_TZ).strftime('%m-%d %H:%M'))} 北京时间 · {html.escape(event.title)}</strong>"
         f"<br><span class=\"small\">来源：<a href=\"{html.escape(event.url)}\">{html.escape(event.source)}</a> · "
         f"影响：{html.escape(event.impact)} · {html.escape(event.btc_view)}</span>"
-        "</li>"
+        + (f"<br><span class=\"small\"><strong>市场预期：</strong>{html.escape(event.expected)}</span>" if event.expected else "")
+        + (f"<br><span class=\"small\"><strong>前值：</strong>{html.escape(event.previous)}</span>" if event.previous else "")
+        + (f"<br><span class=\"small\"><strong>我的判断：</strong>{html.escape(event.my_forecast)}</span>" if event.my_forecast else "")
+        + (f"<br><span class=\"small\"><strong>BTC方向：</strong>{html.escape(event.btc_direction)}</span>" if event.btc_direction else "")
+        + "</li>"
         for event in macro_brief.events
     ) or "<li>未来24小时未识别到已接入日历中的高影响事件。</li>"
 
@@ -339,6 +343,8 @@ def render_report(
     }}
     let liveSupport = {indicators.support};
     let liveResistance = {indicators.resistance};
+    let liveRefreshInFlight = false;
+    let websocketHasLivePrice = false;
     function updateSimplePlan(latest, support, resistance, source) {{
       const shortTp1 = Math.min(latest * 0.988, (support + resistance) / 2);
       const shortTp2 = support;
@@ -389,6 +395,8 @@ def render_report(
       return Math.max(...candidates.filter(v => v < latest));
     }}
     async function refreshLiveMarket(reason = 'page-load') {{
+      if (liveRefreshInFlight) return;
+      liveRefreshInFlight = true;
       try {{
         setText('liveFetchMeta', `实时抓取状态：正在请求 OKX · ${{fmtTime(new Date())}}`);
         const [c15j, c1hj, c4hj, fundingResult, oiResult, mj] = await Promise.all([
@@ -439,13 +447,15 @@ def render_report(
         setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：浏览器现场抓取`);
         updateSimplePlan(latest, support, resistance, 'OKX REST现场抓取');
         const softWarnings = [fundingResult, oiResult].filter(item => !item.ok).map(item => `${{item.label}}失败：${{item.error}}`);
-        setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}${{softWarnings.length ? ' · 部分数据缺失：' + softWarnings.join('；') : ''}}`);
+        setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}} · 模式：${{reason}}${{softWarnings.length ? ' · 部分数据缺失：' + softWarnings.join('；') : ''}}`);
         const status = document.getElementById('liveStatus');
-        if (status) status.innerHTML = `<li>本次页面刷新已现场获取 OKX 行情；触发方式：${{reason}}</li>${{softWarnings.map(item => `<li>${{item}}</li>`).join('')}}`;
+        if (status) status.innerHTML = `<li>本次已现场获取 OKX 行情；触发方式：${{reason}}；WebSocket失败时会每15秒REST轮询。</li>${{softWarnings.map(item => `<li>${{item}}</li>`).join('')}}`;
       }} catch (error) {{
         setText('liveFetchMeta', `实时抓取状态：失败 · ${{String(error)}} · ${{fmtTime(new Date())}}`);
         const status = document.getElementById('liveStatus');
         if (status) status.innerHTML = `<li>浏览器实时行情刷新失败：${{String(error)}}</li>`;
+      }} finally {{
+        liveRefreshInFlight = false;
       }}
     }}
     function startOkxWebSocket() {{
@@ -470,6 +480,7 @@ def render_report(
             if (arg.channel === 'mark-price') {{
               const latest = Number(row.markPx || 0);
               if (latest > 0) {{
+                websocketHasLivePrice = true;
                 setText('liveLatestPrice', fmtPrice(latest));
                 updateSimplePlan(latest, liveSupport, liveResistance, 'OKX WebSocket实时推送');
                 setText('liveFetchMeta', `实时抓取状态：WebSocket成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}`);
@@ -490,14 +501,27 @@ def render_report(
             setText('liveFetchMeta', `实时抓取状态：WebSocket消息解析失败 · ${{String(error)}}`);
           }}
         }};
-        ws.onerror = () => setText('liveFetchMeta', `实时抓取状态：WebSocket失败，已保留REST结果 · ${{fmtTime(new Date())}}`);
-        ws.onclose = () => setTimeout(startOkxWebSocket, 5000);
+        ws.onerror = () => {{
+          websocketHasLivePrice = false;
+          setText('liveFetchMeta', `实时抓取状态：WebSocket失败，切换为15秒REST轮询 · ${{fmtTime(new Date())}}`);
+          refreshLiveMarket('websocket-error-rest-fallback');
+        }};
+        ws.onclose = () => {{
+          websocketHasLivePrice = false;
+          setTimeout(startOkxWebSocket, 5000);
+        }};
       }} catch (error) {{
         setText('liveFetchMeta', `实时抓取状态：WebSocket启动失败 · ${{String(error)}}`);
       }}
     }}
     refreshLiveMarket('page-load');
     startOkxWebSocket();
+    setInterval(() => {{
+      if (document.visibilityState !== 'hidden' && !websocketHasLivePrice) refreshLiveMarket('REST-15s-fallback');
+    }}, 15000);
+    setInterval(() => {{
+      if (document.visibilityState !== 'hidden' && websocketHasLivePrice) refreshLiveMarket('REST-60s-sync');
+    }}, 60000);
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshLiveMarket('page-visible'); }});
     window.addEventListener('focus', () => refreshLiveMarket('window-focus'));
   </script>
