@@ -255,7 +255,10 @@ def render_report(
       <h2>后续操作计划</h2>
       <p><strong>当前点位：</strong><span id="simpleCurrentPoint">{fmt_price(indicators.latest_price)}</span></p>
       <p><strong>止盈点位：</strong><span id="simpleTakeProfit">{fmt_price(indicators.latest_price * 0.988)} - {fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.965)} 分批止盈</span></p>
-      <p><strong>开仓建议：</strong><span id="simpleOpenAdvice">{fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.965)} 分批开多</span></p>
+      <p><strong>止损点位：</strong><span id="simpleStopLoss">{fmt_price(indicators.resistance * 1.002)} 附近硬止损，接近强平前必须离场</span></p>
+      <p><strong>加空点位：</strong><span id="simpleShortEntry">{fmt_price(indicators.resistance * 0.998)} - {fmt_price(indicators.resistance * 1.002)} 反弹受阻再考虑</span></p>
+      <p><strong>开多点位：</strong><span id="simpleLongEntry">{fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.985)} 分批开多</span></p>
+      <p><strong>参考信息：</strong><span id="simplePlanContext">支撑 {fmt_price(indicators.support)} · 阻力 {fmt_price(indicators.resistance)} · 强平 {fmt_price(position.liquidation_price)}</span></p>
       <p class="small">策略偏好：{html.escape(preference.style)}；单次加仓上限：账户权益的 {preference.max_single_add_pct * 100:.1f}%；总名义仓位上限：账户权益的 {preference.max_total_notional_pct * 100:.1f}%。</p>
     </section>
 
@@ -346,11 +349,28 @@ def render_report(
     let liveRefreshInFlight = false;
     let websocketHasLivePrice = false;
     function updateSimplePlan(latest, support, resistance, source) {{
-      const shortTp1 = Math.min(latest * 0.988, (support + resistance) / 2);
-      const shortTp2 = support;
+      const entry = Number(positionConfig.activeEntry || positionConfig.shortEntry || 0);
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      const midRange = (support + resistance) / 2;
+      const shortTp1 = Math.min(entry || latest * 0.996, latest * 0.992, midRange);
+      const shortTp2 = Math.min(support, shortTp1 * 0.992);
+      const shortTp3 = Math.min(support * 0.985, shortTp2 * 0.99);
+      const stopCandidates = [resistance * 1.002, latest * 1.008];
+      if (entry > 0) stopCandidates.push(entry * 1.026);
+      if (liq > 0) stopCandidates.push(liq * 0.985);
+      const shortStop = Math.min(...stopCandidates.filter(v => Number.isFinite(v) && v > latest));
+      const shortEntry1 = Math.max(resistance * 0.996, latest * 1.002);
+      const shortEntry2 = Math.max(resistance * 1.002, shortEntry1 * 1.004);
+      const shortBreakdown = Math.min(support * 0.998, latest * 0.996);
+      const longEntry1 = Math.min(support * 1.001, latest * 0.995);
+      const longEntry2 = Math.min(support * 0.985, longEntry1 * 0.99);
+      const liqGap = liq ? (liq / latest - 1) * 100 : NaN;
       setText('simpleCurrentPoint', fmtPrice(latest));
-      setText('simpleTakeProfit', `${{fmtPrice(shortTp1)}} - ${{fmtPrice(shortTp2)}} - ${{fmtPrice(shortTp2 * 0.965)}} 分批止盈`);
-      setText('simpleOpenAdvice', `${{fmtPrice(support * 0.998)}} - ${{fmtPrice(support * 0.965)}} 分批开多`);
+      setText('simpleTakeProfit', `${{fmtPrice(shortTp1)}} / ${{fmtPrice(shortTp2)}} / ${{fmtPrice(shortTp3)}} 分批止盈，第一档先减30%-40%`);
+      setText('simpleStopLoss', `${{fmtPrice(shortStop)}} 硬止损；若15分钟收盘站上 ${{fmtPrice(resistance)}}，先减仓或离场`);
+      setText('simpleShortEntry', `反弹 ${{fmtPrice(shortEntry1)}} - ${{fmtPrice(shortEntry2)}} 受阻再加空；跌破 ${{fmtPrice(shortBreakdown)}} 后回抽不破可追空`);
+      setText('simpleLongEntry', `仅在 ${{fmtPrice(longEntry1)}} - ${{fmtPrice(longEntry2)}} 企稳，或15分钟重新站上 ${{fmtPrice(resistance)}} 后回踩不破再开多`);
+      setText('simplePlanContext', `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 开仓均价 ${{fmtPrice(entry)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 数据源：${{source}}`);
       setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
       updatePositionUi(latest);
     }}

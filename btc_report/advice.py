@@ -112,7 +112,7 @@ def build_advice(position: PositionConfig, pref: PreferenceConfig, ind: Indicato
         if has_short:
             emergency_stop = position.short.stop_loss or short_stop
             short_plan = (
-                f"空头计划：已有空单 0.1 BTC，开仓均价 {_price(position.short.entry_price)}。"
+                f"空头计划：已有空单 {position.short.quantity_btc:g} BTC，开仓均价 {_price(position.short.entry_price)}。"
                 f"若价格反弹到 {_band(short_entry, 0.002)} 受阻，可继续持有；不建议在强平价附近继续加空。"
                 f"必须设置硬止损 {_price(emergency_stop)}，第一止盈 {_price(short_tp1)}，第二止盈 {_price(short_tp2)}。"
                 f"若跌破 {_price(short_tp1)} 后反抽不破，可把止损下移到开仓价 {_price(position.short.entry_price)} 附近。"
