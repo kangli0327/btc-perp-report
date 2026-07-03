@@ -373,6 +373,7 @@ def render_report(
         <div class="plan-line"><div class="plan-label">加空计划</div><div id="simpleShortEntry">{fmt_price(indicators.resistance * 0.998)} - {fmt_price(indicators.resistance * 1.002)} 反弹受阻再考虑</div></div>
         <div class="plan-line"><div class="plan-label">开多计划</div><div id="simpleLongEntry">{fmt_price(indicators.support)} - {fmt_price(indicators.support * 0.985)} 企稳后分批开多</div></div>
         <div class="plan-line"><div class="plan-label">保证金</div><div id="simpleMarginBudget">本次最大保证金：{fmt_price(single_risk_usdt * 6)} USDT，必须和止损距离一起收缩</div></div>
+        <div class="plan-line"><div class="plan-label">触发状态</div><div id="simpleTriggerStatus">等待浏览器实时行情刷新</div></div>
       </div>
       <p class="small" id="simplePlanContext">支撑 {fmt_price(indicators.support)} · 阻力 {fmt_price(indicators.resistance)} · ATR {fmt_price(indicators.atr_15m)} · VWAP {fmt_price(indicators.vwap_24h)} · 数据源：模板生成</p>
     </section>
@@ -553,6 +554,8 @@ def render_report(
     let liveSupport = {indicators.support};
     let liveResistance = {indicators.resistance};
     let liveLatest = {indicators.latest_price};
+    let lockedPositionPlan = null;
+    let lockedPositionPlanKey = '';
     let liveRefreshInFlight = false;
     let websocketHasLivePrice = false;
     function validPrice(value, fallback) {{
@@ -568,6 +571,28 @@ def render_report(
     function addMarginText(stop, latest) {{
       const distancePct = Math.abs(pct(stop, latest));
       return `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；止损距离约 ${{fmtPct(distancePct)}}，距离越大保证金必须越小`;
+    }}
+    function currentPositionPlanKey() {{
+      const side = positionConfig.activeSide || 'flat';
+      const qty = Number(positionConfig.activeQty || 0).toFixed(6);
+      const entry = Number(positionConfig.activeEntry || 0).toFixed(1);
+      const margin = Number(positionConfig.initialMargin || 0).toFixed(2);
+      const liq = Number(positionConfig.liquidationPrice || 0).toFixed(1);
+      return `${{side}}|${{qty}}|${{entry}}|${{margin}}|${{liq}}`;
+    }}
+    function riskAdjustedMarginText(side, stop, latest) {{
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      const liqGap = calcLiqGap(side, latest);
+      if (side === 'short' && liq && stop >= liq * 0.995) {{
+        return '风险过高：止损已经贴近强平价，先减仓或补保证金，不给加仓建议';
+      }}
+      if (side === 'long' && liq && stop <= liq * 1.005) {{
+        return '风险过高：止损已经贴近强平价，先减仓或补保证金，不给加仓建议';
+      }}
+      if (Number.isFinite(liqGap) && liqGap < 1.5) {{
+        return '风险过高：距离强平过近，先减仓，不执行加仓计划';
+      }}
+      return addMarginText(stop, latest);
     }}
     function buildShortPlan(latest, support, resistance) {{
       const entry = Number(positionConfig.activeEntry || positionConfig.shortEntry || latest);
@@ -585,11 +610,15 @@ def render_report(
       const reverseLong1 = Math.min(support * 1.001, latest * 0.995);
       const reverseLong2 = Math.min(support * 0.985, reverseLong1 * 0.99);
       return {{
+        side: 'short',
+        tp1, tp2, tp3, stop,
+        supportSnapshot: support,
+        resistanceSnapshot: resistance,
         takeProfit: `${{fmtPrice(tp1)}} / ${{fmtPrice(tp2)}} / ${{fmtPrice(tp3)}} 空单分批止盈，第一档先减30%-40%`,
         stopLoss: `${{fmtPrice(stop)}} 空单硬止损；若15分钟收盘站上 ${{fmtPrice(resistance)}}，先减仓或离场`,
         shortEntry: `加空：反弹 ${{fmtPrice(add1)}} - ${{fmtPrice(add2)}} 受阻再加；跌破 ${{fmtPrice(breakdown)}} 后回抽不破可追空`,
         longEntry: `反手开多：仅在 ${{fmtPrice(reverseLong1)}} - ${{fmtPrice(reverseLong2)}} 支撑企稳，或15分钟站上 ${{fmtPrice(resistance)}} 后回踩不破再开多`,
-        margin: addMarginText(stop, latest),
+        margin: riskAdjustedMarginText('short', stop, latest),
       }};
     }}
     function buildLongPlan(latest, support, resistance) {{
@@ -608,11 +637,15 @@ def render_report(
       const reverseShort1 = Math.max(resistance * 0.999, latest * 1.004);
       const reverseShort2 = Math.max(resistance * 1.006, reverseShort1 * 1.004);
       return {{
+        side: 'long',
+        tp1, tp2, tp3, stop,
+        supportSnapshot: support,
+        resistanceSnapshot: resistance,
         takeProfit: `${{fmtPrice(tp1)}} / ${{fmtPrice(tp2)}} / ${{fmtPrice(tp3)}} 多单分批止盈，第一档先减30%-40%`,
         stopLoss: `${{fmtPrice(stop)}} 多单硬止损；若15分钟收盘跌破 ${{fmtPrice(support)}}，先减仓或离场`,
         shortEntry: `反手开空：反弹 ${{fmtPrice(reverseShort1)}} - ${{fmtPrice(reverseShort2)}} 失败，或跌破 ${{fmtPrice(support)}} 后回抽不破再开空`,
         longEntry: `加多：回踩 ${{fmtPrice(add1)}} - ${{fmtPrice(add2)}} 企稳再加；突破 ${{fmtPrice(breakout)}} 后回踩不破可追多`,
-        margin: addMarginText(stop, latest),
+        margin: riskAdjustedMarginText('long', stop, latest),
       }};
     }}
     function buildFlatPlan(latest, support, resistance) {{
@@ -628,6 +661,25 @@ def render_report(
         margin: `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；无仓时先等触发，不追中间价`,
       }};
     }}
+    function getOrBuildLockedPositionPlan(latest, support, resistance) {{
+      const key = currentPositionPlanKey();
+      if (lockedPositionPlan && lockedPositionPlanKey === key) return lockedPositionPlan;
+      lockedPositionPlanKey = key;
+      lockedPositionPlan = positionConfig.activeSide === 'short'
+        ? buildShortPlan(latest, support, resistance)
+        : buildLongPlan(latest, support, resistance);
+      lockedPositionPlan.createdAt = fmtTime(new Date());
+      return lockedPositionPlan;
+    }}
+    function triggerStatusText(plan, latest) {{
+      if (!plan || !plan.side) return '等待计划生成';
+      if (plan.side === 'flat') return '无仓观察中：开多/开空触发区会随实时支撑阻力刷新';
+      const tpDistance = plan.side === 'short' ? latest - plan.tp1 : plan.tp1 - latest;
+      const stopDistance = plan.side === 'short' ? plan.stop - latest : latest - plan.stop;
+      const tpText = tpDistance <= 0 ? '已触及第一止盈区' : `距离第一止盈 ${{fmtPrice(tpDistance)}} USDT`;
+      const stopText = stopDistance <= 0 ? '已触及止损区' : `距离止损 ${{fmtPrice(stopDistance)}} USDT`;
+      return `${{tpText}} · ${{stopText}} · 核心点位已锁定，仓位变化才重算`;
+    }}
     function updateSimplePlan(latest, support, resistance, source) {{
       liveLatest = Number(latest || liveLatest || 0);
       latest = liveLatest;
@@ -636,11 +688,12 @@ def render_report(
       const side = positionConfig.activeSide;
       const entry = Number(positionConfig.activeEntry || 0);
       const liq = Number(positionConfig.liquidationPrice || 0);
-      const plan = side === 'short'
-        ? buildShortPlan(latest, support, resistance)
-        : side === 'long'
-          ? buildLongPlan(latest, support, resistance)
-          : buildFlatPlan(latest, support, resistance);
+      const hasPosition = side !== 'flat' && Number(positionConfig.activeQty || 0) > 0;
+      const plan = hasPosition ? getOrBuildLockedPositionPlan(latest, support, resistance) : buildFlatPlan(latest, support, resistance);
+      if (!hasPosition) {{
+        lockedPositionPlan = null;
+        lockedPositionPlanKey = '';
+      }}
       const liqGap = calcLiqGap(side, latest);
       setText('simpleCurrentPoint', fmtPrice(latest));
       setText('simpleTakeProfit', plan.takeProfit);
@@ -648,9 +701,10 @@ def render_report(
       setText('simpleShortEntry', plan.shortEntry);
       setText('simpleLongEntry', plan.longEntry);
       setText('simpleMarginBudget', plan.margin);
+      setText('simpleTriggerStatus', triggerStatusText(hasPosition ? plan : {{ side: 'flat' }}, latest));
       const context = side === 'flat'
         ? `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 当前无仓 · 数据源：${{source}}`
-        : `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 开仓均价 ${{fmtPrice(entry)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 数据源：${{source}}`;
+        : `计划锁定于 ${{plan.createdAt || '-'}} · 支撑快照 ${{fmtPrice(plan.supportSnapshot)}} · 阻力快照 ${{fmtPrice(plan.resistanceSnapshot)}} · 开仓均价 ${{fmtPrice(entry)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 行情源：${{source}}`;
       setText('simplePlanContext', context);
       setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
       updatePositionUi(latest);
