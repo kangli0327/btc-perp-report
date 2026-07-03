@@ -499,7 +499,20 @@ def render_report(
         setText('positionEntry', fmtPrice(positionConfig.activeEntry));
         setText('positionMargin', fmtPrice(positionConfig.initialMargin));
         setText('positionLiqPrice', fmtPrice(positionConfig.liquidationPrice));
+      }} else {{
+        positionConfig.activeSide = 'flat';
+        positionConfig.activeQty = 0;
+        positionConfig.activeEntry = 0;
+        positionConfig.initialMargin = 0;
+        positionConfig.liquidationPrice = 0;
+        setText('positionSideBadge', '无仓');
+        setText('positionLeverage', '100x');
+        setText('positionQty', '0');
+        setText('positionEntry', '-');
+        setText('positionMargin', '-');
+        setText('positionLiqPrice', '-');
       }}
+      updateSimplePlan(liveLatest, liveSupport, liveResistance, 'OKX账户实时同步');
     }}
     async function refreshAccount(reason = 'page-load') {{
       if (!accountWorkerUrl) {{
@@ -539,32 +552,106 @@ def render_report(
     }}
     let liveSupport = {indicators.support};
     let liveResistance = {indicators.resistance};
+    let liveLatest = {indicators.latest_price};
     let liveRefreshInFlight = false;
     let websocketHasLivePrice = false;
-    function updateSimplePlan(latest, support, resistance, source) {{
-      const entry = Number(positionConfig.activeEntry || positionConfig.shortEntry || 0);
+    function validPrice(value, fallback) {{
+      return Number.isFinite(value) && value > 0 ? value : fallback;
+    }}
+    function calcLiqGap(side, latest) {{
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      if (!liq || !latest) return NaN;
+      if (side === 'short') return (liq / latest - 1) * 100;
+      if (side === 'long') return (1 - liq / latest) * 100;
+      return NaN;
+    }}
+    function addMarginText(stop, latest) {{
+      const distancePct = Math.abs(pct(stop, latest));
+      return `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；止损距离约 ${{fmtPct(distancePct)}}，距离越大保证金必须越小`;
+    }}
+    function buildShortPlan(latest, support, resistance) {{
+      const entry = Number(positionConfig.activeEntry || positionConfig.shortEntry || latest);
       const liq = Number(positionConfig.liquidationPrice || 0);
       const midRange = (support + resistance) / 2;
-      const shortTp1 = Math.min(entry || latest * 0.996, latest * 0.992, midRange);
-      const shortTp2 = Math.min(support, shortTp1 * 0.992);
-      const shortTp3 = Math.min(support * 0.985, shortTp2 * 0.99);
-      const stopCandidates = [resistance * 1.002, latest * 1.008];
-      if (entry > 0) stopCandidates.push(entry * 1.026);
-      if (liq > 0) stopCandidates.push(liq * 0.985);
-      const shortStop = Math.min(...stopCandidates.filter(v => Number.isFinite(v) && v > latest));
-      const shortEntry1 = Math.max(resistance * 0.996, latest * 1.002);
-      const shortEntry2 = Math.max(resistance * 1.002, shortEntry1 * 1.004);
-      const shortBreakdown = Math.min(support * 0.998, latest * 0.996);
-      const longEntry1 = Math.min(support * 1.001, latest * 0.995);
-      const longEntry2 = Math.min(support * 0.985, longEntry1 * 0.99);
-      const liqGap = liq ? (liq / latest - 1) * 100 : NaN;
+      const tp1 = Math.min(entry, latest * 0.992, midRange);
+      const tp2 = Math.min(support, tp1 * 0.992);
+      const tp3 = Math.min(support * 0.985, tp2 * 0.99);
+      const stopCandidates = [resistance * 1.002, latest * 1.008, entry * 1.018];
+      if (liq > latest) stopCandidates.push(liq * 0.985);
+      const stop = validPrice(Math.min(...stopCandidates.filter(v => Number.isFinite(v) && v > latest)), resistance * 1.002);
+      const add1 = Math.max(resistance * 0.996, latest * 1.002);
+      const add2 = Math.max(resistance * 1.002, add1 * 1.004);
+      const breakdown = Math.min(support * 0.998, latest * 0.996);
+      const reverseLong1 = Math.min(support * 1.001, latest * 0.995);
+      const reverseLong2 = Math.min(support * 0.985, reverseLong1 * 0.99);
+      return {{
+        takeProfit: `${{fmtPrice(tp1)}} / ${{fmtPrice(tp2)}} / ${{fmtPrice(tp3)}} 空单分批止盈，第一档先减30%-40%`,
+        stopLoss: `${{fmtPrice(stop)}} 空单硬止损；若15分钟收盘站上 ${{fmtPrice(resistance)}}，先减仓或离场`,
+        shortEntry: `加空：反弹 ${{fmtPrice(add1)}} - ${{fmtPrice(add2)}} 受阻再加；跌破 ${{fmtPrice(breakdown)}} 后回抽不破可追空`,
+        longEntry: `反手开多：仅在 ${{fmtPrice(reverseLong1)}} - ${{fmtPrice(reverseLong2)}} 支撑企稳，或15分钟站上 ${{fmtPrice(resistance)}} 后回踩不破再开多`,
+        margin: addMarginText(stop, latest),
+      }};
+    }}
+    function buildLongPlan(latest, support, resistance) {{
+      const entry = Number(positionConfig.activeEntry || positionConfig.longEntry || latest);
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      const midRange = (support + resistance) / 2;
+      const tp1 = Math.max(entry, latest * 1.008, midRange);
+      const tp2 = Math.max(resistance, tp1 * 1.008);
+      const tp3 = Math.max(resistance * 1.015, tp2 * 1.01);
+      const stopCandidates = [support * 0.998, latest * 0.992, entry * 0.982];
+      if (liq && liq < latest) stopCandidates.push(liq * 1.015);
+      const stop = validPrice(Math.max(...stopCandidates.filter(v => Number.isFinite(v) && v < latest)), support * 0.998);
+      const add1 = Math.min(support * 1.004, latest * 0.998);
+      const add2 = Math.min(support * 0.998, add1 * 0.996);
+      const breakout = Math.max(resistance * 1.002, latest * 1.004);
+      const reverseShort1 = Math.max(resistance * 0.999, latest * 1.004);
+      const reverseShort2 = Math.max(resistance * 1.006, reverseShort1 * 1.004);
+      return {{
+        takeProfit: `${{fmtPrice(tp1)}} / ${{fmtPrice(tp2)}} / ${{fmtPrice(tp3)}} 多单分批止盈，第一档先减30%-40%`,
+        stopLoss: `${{fmtPrice(stop)}} 多单硬止损；若15分钟收盘跌破 ${{fmtPrice(support)}}，先减仓或离场`,
+        shortEntry: `反手开空：反弹 ${{fmtPrice(reverseShort1)}} - ${{fmtPrice(reverseShort2)}} 失败，或跌破 ${{fmtPrice(support)}} 后回抽不破再开空`,
+        longEntry: `加多：回踩 ${{fmtPrice(add1)}} - ${{fmtPrice(add2)}} 企稳再加；突破 ${{fmtPrice(breakout)}} 后回踩不破可追多`,
+        margin: addMarginText(stop, latest),
+      }};
+    }}
+    function buildFlatPlan(latest, support, resistance) {{
+      const long1 = Math.min(support * 1.002, latest * 0.996);
+      const long2 = Math.max(resistance * 1.002, latest * 1.004);
+      const short1 = Math.max(resistance * 0.998, latest * 1.002);
+      const short2 = Math.min(support * 0.998, latest * 0.996);
+      return {{
+        takeProfit: '暂无持仓，不给持仓止盈；先等开仓触发后再生成止盈目标',
+        stopLoss: '暂无持仓，不给持仓止损；新仓必须先确定止损再决定保证金',
+        shortEntry: `开空：反弹 ${{fmtPrice(short1)}} 附近受阻，或跌破 ${{fmtPrice(short2)}} 后回抽不破再考虑`,
+        longEntry: `开多：回踩 ${{fmtPrice(long1)}} 附近企稳，或突破 ${{fmtPrice(long2)}} 后回踩不破再考虑`,
+        margin: `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；无仓时先等触发，不追中间价`,
+      }};
+    }}
+    function updateSimplePlan(latest, support, resistance, source) {{
+      liveLatest = Number(latest || liveLatest || 0);
+      latest = liveLatest;
+      support = validPrice(Number(support), latest * 0.99);
+      resistance = validPrice(Number(resistance), latest * 1.01);
+      const side = positionConfig.activeSide;
+      const entry = Number(positionConfig.activeEntry || 0);
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      const plan = side === 'short'
+        ? buildShortPlan(latest, support, resistance)
+        : side === 'long'
+          ? buildLongPlan(latest, support, resistance)
+          : buildFlatPlan(latest, support, resistance);
+      const liqGap = calcLiqGap(side, latest);
       setText('simpleCurrentPoint', fmtPrice(latest));
-      setText('simpleTakeProfit', `${{fmtPrice(shortTp1)}} / ${{fmtPrice(shortTp2)}} / ${{fmtPrice(shortTp3)}} 分批止盈，第一档先减30%-40%`);
-      setText('simpleStopLoss', `${{fmtPrice(shortStop)}} 硬止损；若15分钟收盘站上 ${{fmtPrice(resistance)}}，先减仓或离场`);
-      setText('simpleShortEntry', `反弹 ${{fmtPrice(shortEntry1)}} - ${{fmtPrice(shortEntry2)}} 受阻再加空；跌破 ${{fmtPrice(shortBreakdown)}} 后回抽不破可追空`);
-      setText('simpleLongEntry', `仅在 ${{fmtPrice(longEntry1)}} - ${{fmtPrice(longEntry2)}} 企稳，或15分钟重新站上 ${{fmtPrice(resistance)}} 后回踩不破再开多`);
-      setText('simpleMarginBudget', `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；如果止损距离扩大，保证金要同步缩小`);
-      setText('simplePlanContext', `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 开仓均价 ${{fmtPrice(entry)}} · 强平 ${{fmtPrice(liq)}} · 数据源：${{source}}`);
+      setText('simpleTakeProfit', plan.takeProfit);
+      setText('simpleStopLoss', plan.stopLoss);
+      setText('simpleShortEntry', plan.shortEntry);
+      setText('simpleLongEntry', plan.longEntry);
+      setText('simpleMarginBudget', plan.margin);
+      const context = side === 'flat'
+        ? `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 当前无仓 · 数据源：${{source}}`
+        : `支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 开仓均价 ${{fmtPrice(entry)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 数据源：${{source}}`;
+      setText('simplePlanContext', context);
       setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
       updatePositionUi(latest);
     }}
@@ -580,7 +667,10 @@ def render_report(
       const vwap = recent.reduce((acc, c) => acc + ((c.high + c.low + c.close) / 3) * c.quoteVolume, 0) / Math.max(recent.reduce((acc, c) => acc + c.quoteVolume, 0), 1);
       const priceVsVwap = vwap ? pct(latest, vwap) : strategyConfig.priceVsVwapPct;
       const funding = Number(snapshot.funding);
+      const side = positionConfig.activeSide;
+      const sideText = side === 'short' ? '当前是空单，优先判断持空、加空、止损和反手开多。' : side === 'long' ? '当前是多单，优先判断持多、加多、止损和反手开空。' : '当前无仓，重点等待开多或开空触发，不追中间价。';
       const cards = [
+        ['当前仓位', sideText],
         ['大方向', `${{strategyConfig.emaState4h}}；4小时RSI ${{Number(strategyConfig.rsi4h).toFixed(1)}}。大周期决定只顺势做，逆势只当短线反弹处理。`],
         ['短线动能', `1小时MACD柱 ${{Number(strategyConfig.macdHist1h).toFixed(1)}}，15分钟MACD柱 ${{Number(strategyConfig.macdHist15m).toFixed(1)}}；同向时才更适合执行开仓。`],
         ['量价关系', `15分钟成交量约为均量 ${{Number(volumeRatio).toFixed(2)}} 倍；放量突破更可信，缩量反弹更适合观察是否受阻。`],
