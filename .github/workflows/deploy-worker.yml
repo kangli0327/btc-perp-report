@@ -18,7 +18,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy workers/okx-account-worker.js --name btc-account --compatibility-date 2026-07-05
+          command: deploy
           secrets: |
             OKX_API_KEY
             OKX_API_SECRET

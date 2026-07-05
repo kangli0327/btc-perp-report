@@ -1,0 +1,3 @@
+name = "btc-account"
+main = "workers/okx-account-worker.js"
+compatibility_date = "2026-07-05"
