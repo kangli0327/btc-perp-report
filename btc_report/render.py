@@ -14,6 +14,7 @@ from .macro_events import MacroBrief
 
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
+DEFAULT_ACCOUNT_WORKER_URL = "https://btc-account.kangli0327-btc.workers.dev"
 
 
 def fmt_dt(value: datetime) -> str:
@@ -188,7 +189,7 @@ def render_report(
     )
     points = chart_points(market)
     generated_text = fmt_dt(generated_at)
-    account_worker_url = os.environ.get("ACCOUNT_WORKER_URL", "").strip()
+    account_worker_url = os.environ.get("ACCOUNT_WORKER_URL", "").strip() or DEFAULT_ACCOUNT_WORKER_URL
 
     return f"""<!doctype html>
 <html lang="zh-CN">
