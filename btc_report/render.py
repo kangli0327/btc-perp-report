@@ -441,6 +441,7 @@ def render_report(
     }};
     const pct = (a, b) => b ? (a / b - 1) * 100 : 0;
     const setText = (id, text) => {{ const el = document.getElementById(id); if (el) el.textContent = text; }};
+    let lastAccountRefreshAt = 0;
     function updatePositionUi(latest) {{
       const side = positionConfig.activeSide;
       const qty = Number(positionConfig.activeQty || 0);
@@ -475,6 +476,7 @@ def render_report(
     }}
     function applyAccountSnapshot(account) {{
       if (!account || !account.ok) return;
+      const syncedAt = account.okxFetchedAt || account.workerFetchedAt || account.updatedAt || new Date().toISOString();
       const rate = Number(account.cnyRate || positionConfig.fallbackCnyRate || 7.2);
       const equityUsdt = Number(account.equityUsdt || positionConfig.accountEquity || 0);
       const equityCny = Number(account.equityCny || equityUsdt * rate);
@@ -484,7 +486,8 @@ def render_report(
       setText('sprintEquityCny', fmtCny(equityCny));
       setText('sprintEquity', `${{fmtMoney2(equityUsdt)}} USDT · 汇率 ${{rate.toFixed(3)}}`);
       setText('sprintWeeklyRisk', `${{fmtCny(weekLossCny)}} / ${{fmtCny(weekRiskCny)}}`);
-      setText('accountRefreshState', `成功 · ${{fmtTime(new Date())}}`);
+      const hedgeText = account.hasHedgedPositions ? ' · 检测到双向持仓，显示主仓位' : '';
+      setText('accountRefreshState', `成功 · ${{fmtTime(new Date(syncedAt))}}${{hedgeText}}`);
       if (account.position) {{
         const p = account.position;
         const side = p.side || positionConfig.activeSide;
@@ -517,20 +520,27 @@ def render_report(
     }}
     async function refreshAccount(reason = 'page-load') {{
       if (!accountWorkerUrl) {{
-        setText('accountRefreshState', '未配置实时账户接口');
+        setText('accountRefreshState', '实时账户接口未配置，持仓不会同步');
         setText('sprintEquityCny', fmtCny(Number(positionConfig.accountEquity || 0) * Number(positionConfig.fallbackCnyRate || 7.2)));
         setText('sprintWeeklyRisk', `${{fmtCny(positionConfig.sprintWeeklyLossCny || 0)}} / ${{fmtCny(positionConfig.sprintWeeklyRiskCny || 0)}}`);
         return;
       }}
+      lastAccountRefreshAt = Date.now();
       try {{
         setText('accountRefreshState', `刷新中 · ${{fmtTime(new Date())}}`);
         const response = await fetch(withCacheBust(accountWorkerUrl), {{ cache: 'no-store' }});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.error || 'Worker返回失败');
         applyAccountSnapshot(payload);
       }} catch (error) {{
         setText('accountRefreshState', `失败 · ${{String(error).slice(0, 42)}}`);
       }}
+    }}
+    function refreshAccountSoon(reason) {{
+      if (!accountWorkerUrl) return;
+      if (Date.now() - lastAccountRefreshAt < 10000) return;
+      refreshAccount(reason);
     }}
     function updateSprintUi(latest, liqGap, liqState) {{
       const hasPosition = positionConfig.activeSide !== 'flat' && Number(positionConfig.activeQty || 0) > 0;
@@ -977,6 +987,7 @@ def render_report(
                 setText('liveLatestPrice', fmtPrice(latest));
                 setText('livePriceSource', `OKX WebSocket实时推送 · ${{fmtTime(new Date())}}`);
                 updateSimplePlan(latest, liveSupport, liveResistance, 'OKX WebSocket实时推送');
+                refreshAccountSoon('websocket-price-sync');
                 setText('liveFetchMeta', `实时抓取状态：WebSocket成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}`);
               }}
             }}
@@ -1020,7 +1031,7 @@ def render_report(
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshLiveMarket('page-visible'); }});
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshAccount('page-visible'); }});
     window.addEventListener('focus', () => {{ refreshLiveMarket('window-focus'); refreshAccount('window-focus'); }});
-    setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshAccount('account-60s-sync'); }}, 60000);
+    setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshAccount('account-15s-sync'); }}, 15000);
   </script>
 </body>
 </html>

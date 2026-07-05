@@ -17,6 +17,9 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("positionConfig.activeSide = 'flat'", source)
         self.assertIn("side === 'short'", source)
         self.assertIn("side === 'long'", source)
+        self.assertIn("实时账户接口未配置，持仓不会同步", source)
+        self.assertIn("account-15s-sync", source)
+        self.assertIn("refreshAccountSoon('websocket-price-sync')", source)
 
 
 if __name__ == "__main__":

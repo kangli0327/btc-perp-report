@@ -13,7 +13,8 @@ function jsonResponse(body, status = 200) {
     headers: {
       ...corsHeaders,
       "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
+      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+      "Pragma": "no-cache",
     },
   });
 }
@@ -63,10 +64,11 @@ async function cnyRate() {
     });
     const payload = await response.json();
     const rate = Number(payload?.data?.rates?.CNY);
-    return Number.isFinite(rate) && rate > 0 ? { rate, source: "Coinbase USDT/CNY" } : { rate: FALLBACK_CNY_RATE, source: "fallback" };
+    if (Number.isFinite(rate) && rate > 0) return { rate, source: "Coinbase USDT/CNY" };
   } catch {
-    return { rate: FALLBACK_CNY_RATE, source: "fallback" };
+    // Fall through to the stable fallback used by the dashboard.
   }
+  return { rate: FALLBACK_CNY_RATE, source: "fallback" };
 }
 
 function beijingWeekKey(now = new Date()) {
@@ -84,30 +86,46 @@ function weeklyRiskPct(equityCny) {
   return 0.08;
 }
 
-function parsePosition(positions, instruments) {
+function parsePositions(positions, instruments) {
   const inst = instruments.find((item) => item.instId === "BTC-USDT-SWAP") || {};
   const contractValue = Number(inst.ctVal || 0.01);
-  const active = positions.find((item) => Math.abs(Number(item.pos || 0)) > 0);
-  if (!active) return null;
-  const rawPos = Number(active.pos || 0);
-  const posSide = active.posSide === "net" ? (rawPos < 0 ? "short" : "long") : active.posSide;
-  return {
-    side: posSide === "short" ? "short" : "long",
-    quantityBtc: Math.abs(rawPos) * contractValue,
-    contracts: Math.abs(rawPos),
-    entryPrice: Number(active.avgPx || 0),
-    leverage: Number(active.lever || 100),
-    marginUsdt: Number(active.margin || active.imr || 0),
-    liquidationPrice: Number(active.liqPx || 0),
-    uplUsdt: Number(active.upl || 0),
-  };
+  return positions
+    .filter((item) => item.instId === "BTC-USDT-SWAP" && Math.abs(Number(item.pos || 0)) > 0)
+    .map((item) => {
+      const rawPos = Number(item.pos || 0);
+      const posSide = item.posSide === "net" ? (rawPos < 0 ? "short" : "long") : item.posSide;
+      const entryPrice = Number(item.avgPx || 0);
+      const markPrice = Number(item.markPx || 0);
+      const quantityBtc = Math.abs(rawPos) * contractValue;
+      const notionalUsdt = Math.abs(quantityBtc * (markPrice || entryPrice));
+      return {
+        side: posSide === "short" ? "short" : "long",
+        quantityBtc,
+        contracts: Math.abs(rawPos),
+        entryPrice,
+        markPrice,
+        notionalUsdt,
+        leverage: Number(item.lever || 100),
+        marginUsdt: Number(item.margin || item.imr || 0),
+        liquidationPrice: Number(item.liqPx || 0),
+        uplUsdt: Number(item.upl || 0),
+        posSide: item.posSide,
+      };
+    });
+}
+
+function selectActivePosition(parsedPositions) {
+  if (!parsedPositions.length) return null;
+  return parsedPositions
+    .slice()
+    .sort((a, b) => (b.marginUsdt || b.notionalUsdt || 0) - (a.marginUsdt || a.notionalUsdt || 0))[0];
 }
 
 async function weeklyLoss(env, equityCny) {
   const key = `week-start:${beijingWeekKey()}`;
   const riskCap = equityCny * weeklyRiskPct(equityCny);
   if (!env.ACCOUNT_KV) {
-    return { weekStartEquityCny: equityCny, weekLossCny: 0, weekRiskCny: riskCap, status: "KV未绑定，暂用当前权益作为本周基准" };
+    return { weekStartEquityCny: equityCny, weekLossCny: 0, weekRiskCny: riskCap, weeklyStatus: "KV not bound; using current equity as week baseline" };
   }
   let baseline = Number(await env.ACCOUNT_KV.get(key));
   if (!Number.isFinite(baseline) || baseline <= 0) {
@@ -118,7 +136,7 @@ async function weeklyLoss(env, equityCny) {
     weekStartEquityCny: baseline,
     weekLossCny: Math.max(0, baseline - equityCny),
     weekRiskCny: riskCap,
-    status: "本周基准已同步",
+    weeklyStatus: "week baseline synced",
   };
 }
 
@@ -129,6 +147,7 @@ export default {
       for (const key of ["OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"]) {
         if (!env[key]) throw new Error(`Missing ${key}`);
       }
+      const workerFetchedAt = new Date().toISOString();
       const [balances, positions, instruments, rateInfo] = await Promise.all([
         okxGet(env, "/api/v5/account/balance?ccy=USDT"),
         okxGet(env, "/api/v5/account/positions?instType=SWAP&instId=BTC-USDT-SWAP"),
@@ -141,19 +160,26 @@ export default {
       const availableUsdt = Number(detail.availEq || detail.availBal || 0);
       const equityCny = equityUsdt * rateInfo.rate;
       const week = await weeklyLoss(env, equityCny);
+      const parsedPositions = parsePositions(positions, instruments);
+      const activePosition = selectActivePosition(parsedPositions);
       return jsonResponse({
         ok: true,
-        updatedAt: new Date().toISOString(),
+        source: "cloudflare-worker-okx-private",
+        updatedAt: workerFetchedAt,
+        workerFetchedAt,
+        okxFetchedAt: workerFetchedAt,
         equityUsdt,
         availableUsdt,
         equityCny,
         cnyRate: rateInfo.rate,
         cnyRateSource: rateInfo.source,
         ...week,
-        position: parsePosition(positions, instruments),
+        position: activePosition,
+        positions: parsedPositions,
+        hasHedgedPositions: parsedPositions.length > 1,
       });
     } catch (error) {
-      return jsonResponse({ ok: false, error: String(error) }, 500);
+      return jsonResponse({ ok: false, error: String(error), updatedAt: new Date().toISOString() }, 500);
     }
   },
 };
