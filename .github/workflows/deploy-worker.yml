@@ -29,9 +29,13 @@ jobs:
           printf '%s' "$OKX_API_KEY" | wrangler secret put OKX_API_KEY
           printf '%s' "$OKX_API_SECRET" | wrangler secret put OKX_API_SECRET
           printf '%s' "$OKX_API_PASSPHRASE" | wrangler secret put OKX_API_PASSPHRASE
+          if [ -n "$TRADING_ECONOMICS_KEY" ]; then
+            printf '%s' "$TRADING_ECONOMICS_KEY" | wrangler secret put TRADING_ECONOMICS_KEY
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_API_SECRET: ${{ secrets.OKX_API_SECRET }}
           OKX_API_PASSPHRASE: ${{ secrets.OKX_API_PASSPHRASE }}
+          TRADING_ECONOMICS_KEY: ${{ secrets.TRADING_ECONOMICS_KEY }}

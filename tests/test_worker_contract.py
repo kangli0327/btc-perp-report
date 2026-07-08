@@ -11,6 +11,12 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("hasHedgedPositions: parsedPositions.length > 1", source)
         self.assertIn("Cache-Control", source)
         self.assertIn("no-store", source)
+        self.assertIn("function weeklyPerformance", source)
+        self.assertIn("weekProfitCny", source)
+        self.assertIn("weeklyLossLimitCny", source)
+        self.assertIn("weeklyRiskStatus", source)
+        self.assertIn("function macroBrief", source)
+        self.assertIn('url.pathname === "/macro"', source)
 
 
 if __name__ == "__main__":

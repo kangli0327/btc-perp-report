@@ -42,10 +42,10 @@ def chart_points(data: MarketData) -> str:
 def sprint_stage(equity_usdt: float) -> dict[str, float | str]:
     equity_cny = equity_usdt * 7.2
     stages: list[dict[str, float | str]] = [
-        {"name": "阶段1：5000 -> 10000元", "min": 0.0, "max": 10000.0, "risk": 0.035, "weekly": 0.25},
-        {"name": "阶段2：10000 -> 30000元", "min": 10000.0, "max": 30000.0, "risk": 0.030, "weekly": 0.18},
-        {"name": "阶段3：30000 -> 100000元", "min": 30000.0, "max": 100000.0, "risk": 0.020, "weekly": 0.12},
-        {"name": "阶段4：100000 -> 300000元", "min": 100000.0, "max": 300000.0, "risk": 0.015, "weekly": 0.08},
+        {"name": "阶段1：5000 -> 10000元", "min": 0.0, "max": 10000.0, "risk": 0.035, "weekly": 0.40},
+        {"name": "阶段2：10000 -> 30000元", "min": 10000.0, "max": 30000.0, "risk": 0.030, "weekly": 0.30},
+        {"name": "阶段3：30000 -> 100000元", "min": 30000.0, "max": 100000.0, "risk": 0.020, "weekly": 0.20},
+        {"name": "阶段4：100000 -> 300000元", "min": 100000.0, "max": 300000.0, "risk": 0.015, "weekly": 0.12},
     ]
     for stage in stages:
         if equity_cny < float(stage["max"]):
@@ -107,7 +107,7 @@ def render_report(
     single_risk_usdt = position.account_equity_usdt * float(sprint["risk"])
     equity_cny = position.account_equity_usdt * 7.2
     weekly_risk_cny = equity_cny * float(sprint["weekly"])
-    weekly_loss_cny = 0.0
+    weekly_profit_cny = 0.0
     target_progress = min(equity_cny / 300000 * 100, 100)
     macro_high_soon = any(
         event.impact in {"高", "中高"} and 0 <= (event.scheduled_at.astimezone(CN_TZ) - generated_at).total_seconds() <= 30 * 60
@@ -148,7 +148,8 @@ def render_report(
             "maxSingleAddPct": preference.max_single_add_pct,
             "sprintSingleRisk": single_risk_usdt,
             "sprintWeeklyRiskCny": weekly_risk_cny,
-            "sprintWeeklyLossCny": weekly_loss_cny,
+            "sprintWeeklyProfitCny": weekly_profit_cny,
+            "sprintWeeklyLossCny": max(0.0, -weekly_profit_cny),
             "fallbackCnyRate": 7.2,
         },
         ensure_ascii=False,
@@ -300,9 +301,9 @@ def render_report(
       <div class="sprint-grid">
         <div class="sprint-item stage"><div class="label">当前阶段</div><div class="value">{html.escape(str(sprint["name"]))}</div></div>
         <div class="sprint-item"><div class="label">账户权益人民币</div><div class="value"><div class="equity-main" id="sprintEquityCny">¥{fmt_price(equity_cny)}</div><div class="equity-sub" id="sprintEquity">{fmt_price(position.account_equity_usdt)} USDT</div></div></div>
-        <div class="sprint-item"><div class="label">一周最大亏损/已亏损</div><div class="value" id="sprintWeeklyRisk">¥{fmt_price(weekly_loss_cny)} / ¥{fmt_price(weekly_risk_cny)}</div></div>
+        <div class="sprint-item"><div class="label">一周收益 / 最大亏损</div><div class="value" id="sprintWeeklyRisk">¥{fmt_price(weekly_profit_cny)} / ¥{fmt_price(weekly_risk_cny)}</div></div>
         <div class="sprint-item"><div class="label">用户设定杠杆</div><div class="value" id="sprintLeverage">100x</div></div>
-        <div class="sprint-item"><div class="label">交易纪律</div><div class="value">亏损触线停手</div></div>
+        <div class="sprint-item"><div class="label">本周风控状态</div><div class="value" id="weeklyRiskStatus">亏损触线停手</div></div>
         <div class="sprint-item"><div class="label">权益刷新</div><div class="value" id="accountRefreshState">等待实时账户接口</div></div>
       </div>
     </section>
@@ -386,12 +387,12 @@ def render_report(
       <p class="small">点位只在策略评分和入场条件成立后执行；不是单纯用支撑阻力套公式。</p>
     </section>
 
-    <section>
+    <section id="macroSection">
       <h2>未来24小时宏观事件</h2>
-      <p>{html.escape(macro_brief.summary)}</p>
-      <p><strong>BTC波动预测：</strong>{html.escape(macro_brief.forecast)}</p>
-      <p class="small">窗口：{macro_brief.window_start:%Y-%m-%d %H:%M} - {macro_brief.window_end:%Y-%m-%d %H:%M} 北京时间</p>
-      <ul>{macro_events_html}</ul>
+      <p id="macroSummary">{html.escape(macro_brief.summary)}</p>
+      <p><strong>BTC波动预测：</strong><span id="macroForecast">{html.escape(macro_brief.forecast)}</span></p>
+      <p class="small" id="macroWindow">窗口：{macro_brief.window_start:%Y-%m-%d %H:%M} - {macro_brief.window_end:%Y-%m-%d %H:%M} 北京时间</p>
+      <ul id="macroEventsList">{macro_events_html}</ul>
     </section>
 
     <section>
@@ -1020,6 +1021,430 @@ def render_report(
         setText('liveFetchMeta', `实时抓取状态：WebSocket启动失败 · ${{String(error)}}`);
       }}
     }}
+    // V5 realtime risk, strategy scoring, lifecycle-locked position plan, and macro refresh.
+    const macroWorkerBaseUrl = accountWorkerUrl && accountWorkerUrl.endsWith('/') ? accountWorkerUrl.slice(0, -1) : accountWorkerUrl;
+    const macroWorkerUrl = macroWorkerBaseUrl ? `${{macroWorkerBaseUrl}}/macro` : '';
+    let latestStrategySnapshot = null;
+
+    function v5Clamp(value, min, max) {{ return Math.max(min, Math.min(max, value)); }}
+    function v5Closes(candles) {{ return (candles || []).map(c => Number(c.close || 0)).filter(v => Number.isFinite(v) && v > 0); }}
+    function v5Sma(values, length) {{
+      const chunk = values.slice(-length);
+      return chunk.length ? chunk.reduce((a, b) => a + b, 0) / chunk.length : 0;
+    }}
+    function v5EmaSeries(values, length) {{
+      if (!values.length) return [];
+      const alpha = 2 / (length + 1);
+      const result = [values[0]];
+      for (let i = 1; i < values.length; i += 1) result.push(values[i] * alpha + result[result.length - 1] * (1 - alpha));
+      return result;
+    }}
+    function v5Ema(values, length) {{
+      const series = v5EmaSeries(values, length);
+      return series.length ? series[series.length - 1] : 0;
+    }}
+    function v5Rsi(values, length = 14) {{
+      if (values.length <= length) return 50;
+      let gain = 0, loss = 0;
+      const slice = values.slice(-length - 1);
+      for (let i = 1; i < slice.length; i += 1) {{
+        const diff = slice[i] - slice[i - 1];
+        if (diff >= 0) gain += diff; else loss += Math.abs(diff);
+      }}
+      const avgGain = gain / length;
+      const avgLoss = loss / length;
+      if (!avgLoss) return avgGain ? 100 : 50;
+      return 100 - (100 / (1 + avgGain / avgLoss));
+    }}
+    function v5Macd(values) {{
+      if (values.length < 35) return {{ line: 0, signal: 0, hist: 0 }};
+      const fast = v5EmaSeries(values, 12);
+      const slow = v5EmaSeries(values, 26);
+      const lineSeries = fast.map((v, i) => v - slow[i]);
+      const signalSeries = v5EmaSeries(lineSeries, 9);
+      const line = lineSeries[lineSeries.length - 1] || 0;
+      const signal = signalSeries[signalSeries.length - 1] || 0;
+      return {{ line, signal, hist: line - signal }};
+    }}
+    function v5Atr(candles, length = 14) {{
+      if (!candles || candles.length < 2) return 0;
+      const slice = candles.slice(-length - 1);
+      const ranges = [];
+      for (let i = 1; i < slice.length; i += 1) {{
+        const current = slice[i];
+        const prev = slice[i - 1];
+        ranges.push(Math.max(current.high - current.low, Math.abs(current.high - prev.close), Math.abs(current.low - prev.close)));
+      }}
+      return ranges.length ? ranges.reduce((a, b) => a + b, 0) / ranges.length : 0;
+    }}
+    function v5Vwap(candles) {{
+      let numerator = 0, denominator = 0;
+      (candles || []).forEach(c => {{
+        const volume = Number(c.quoteVolume || 0);
+        const typical = (Number(c.high || 0) + Number(c.low || 0) + Number(c.close || 0)) / 3;
+        numerator += typical * volume;
+        denominator += volume;
+      }});
+      return denominator ? numerator / denominator : 0;
+    }}
+    function v5VolumeRatio(candles, length = 20) {{
+      if (!candles || candles.length < 2) return 1;
+      const previous = candles.slice(0, -1).slice(-length);
+      const base = previous.reduce((a, c) => a + Number(c.quoteVolume || 0), 0) / Math.max(previous.length, 1);
+      return base ? Number(candles[candles.length - 1].quoteVolume || 0) / base : 1;
+    }}
+    function v5EmaState(candles) {{
+      const closes = v5Closes(candles);
+      const latest = closes[closes.length - 1] || 0;
+      const e20 = v5Ema(closes, 20), e60 = v5Ema(closes, 60), e120 = v5Ema(closes, 120);
+      if (latest > e20 && e20 > e60 && e60 > e120) return {{ text: 'EMA多头排列', e20, e60, e120 }};
+      if (latest < e20 && e20 < e60 && e60 < e120) return {{ text: 'EMA空头排列', e20, e60, e120 }};
+      if (latest > e20 && e20 > e60) return {{ text: 'EMA偏多', e20, e60, e120 }};
+      if (latest < e20 && e20 < e60) return {{ text: 'EMA偏空', e20, e60, e120 }};
+      return {{ text: 'EMA震荡', e20, e60, e120 }};
+    }}
+    function v5BuildMetrics(snapshot) {{
+      const c15 = snapshot.c15 || [], c1h = snapshot.c1h || [], c4h = snapshot.c4h || [];
+      const latest = Number(snapshot.latest || liveLatest || 0);
+      const closes15 = v5Closes(c15), closes1h = v5Closes(c1h), closes4h = v5Closes(c4h);
+      const recent24h = c15.length >= 96 ? c15.slice(-96) : c1h.length >= 24 ? c1h.slice(-24) : c4h.slice(-6);
+      const supportWindow = c15.length >= 24 ? c15.slice(-24) : c15;
+      const support = supportWindow.length ? Math.min(...supportWindow.map(c => Number(c.low || latest))) : liveSupport;
+      const resistance = supportWindow.length ? Math.max(...supportWindow.map(c => Number(c.high || latest))) : liveResistance;
+      const vwap24h = v5Vwap(recent24h);
+      return {{
+        latest,
+        support,
+        resistance,
+        rsi15m: v5Rsi(closes15),
+        rsi1h: v5Rsi(closes1h),
+        rsi4h: v5Rsi(closes4h),
+        macd15m: v5Macd(closes15),
+        macd1h: v5Macd(closes1h),
+        macd4h: v5Macd(closes4h),
+        volumeRatio15m: v5VolumeRatio(c15),
+        volumeRatio1h: v5VolumeRatio(c1h),
+        volumeRatio4h: v5VolumeRatio(c4h),
+        ema15m: v5EmaState(c15),
+        ema1h: v5EmaState(c1h),
+        ema4h: v5EmaState(c4h),
+        atr15m: v5Atr(c15),
+        atr1h: v5Atr(c1h),
+        atr4h: v5Atr(c4h),
+        vwap24h,
+        priceVsVwapPct: vwap24h ? pct(latest, vwap24h) : 0,
+        funding: Number(snapshot.funding),
+        openInterest: Number(snapshot.openInterest),
+        change15m: pct(latest, closes15.length >= 2 ? closes15[closes15.length - 2] : latest),
+        change1h: pct(latest, closes1h.length >= 2 ? closes1h[closes1h.length - 2] : latest),
+        change4h: pct(latest, closes4h.length >= 2 ? closes4h[closes4h.length - 2] : latest),
+        change24h: pct(latest, recent24h.length ? Number(recent24h[0].close || latest) : latest),
+      }};
+    }}
+    function v5Score(metrics) {{
+      let longScore = 35, shortScore = 35, riskScore = 20;
+      const reasons = [];
+      if (metrics.rsi4h > 55) {{ longScore += 14; reasons.push(`4小时RSI ${{metrics.rsi4h.toFixed(1)}}，大方向偏多`); }}
+      else if (metrics.rsi4h < 45) {{ shortScore += 14; reasons.push(`4小时RSI ${{metrics.rsi4h.toFixed(1)}}，大方向偏空`); }}
+      else reasons.push(`4小时RSI ${{metrics.rsi4h.toFixed(1)}}，方向优势不明显`);
+      if (metrics.macd1h.hist > 0) longScore += 16; else if (metrics.macd1h.hist < 0) shortScore += 16;
+      if (metrics.macd15m.hist > 0 && metrics.volumeRatio15m > 1.2) longScore += 10;
+      if (metrics.macd15m.hist < 0 && metrics.volumeRatio15m > 1.2) shortScore += 10;
+      if (['EMA多头排列', 'EMA偏多'].includes(metrics.ema4h.text)) longScore += 12;
+      if (['EMA空头排列', 'EMA偏空'].includes(metrics.ema4h.text)) shortScore += 12;
+      if (metrics.priceVsVwapPct > 0.25) longScore += 5;
+      if (metrics.priceVsVwapPct < -0.25) shortScore += 5;
+      if (Number.isFinite(metrics.funding) && metrics.funding > 0.02 && metrics.change1h < 0) shortScore += 8;
+      if (Number.isFinite(metrics.funding) && metrics.funding < -0.02 && metrics.change1h > 0) longScore += 8;
+      if (Math.abs(metrics.change1h) > 0.7 || Math.abs(metrics.change24h) > 2) riskScore += 15;
+      if (metrics.atr15m && metrics.latest && metrics.atr15m / metrics.latest * 100 > 0.6) riskScore += 15;
+      const liqGap = calcLiqGap(positionConfig.activeSide, metrics.latest);
+      if (Number.isFinite(liqGap) && liqGap < 1.2) riskScore += 60;
+      else if (Number.isFinite(liqGap) && liqGap < 3) riskScore += 35;
+      if (Math.abs(longScore - shortScore) < 12) riskScore += 15;
+      longScore = v5Clamp(Math.round(longScore), 0, 100);
+      shortScore = v5Clamp(Math.round(shortScore), 0, 100);
+      riskScore = v5Clamp(Math.round(riskScore), 0, 100);
+      let tradeMode = '等待确认';
+      if (riskScore >= 80) tradeMode = '禁止交易';
+      else if (positionConfig.activeSide !== 'flat' && Number(positionConfig.activeQty || 0) > 0) tradeMode = Math.abs(longScore - shortScore) < 18 ? '只管理持仓' : shortScore > longScore ? '只做空' : '只做多';
+      else if (longScore >= 62 && longScore - shortScore >= 12) tradeMode = '只做多';
+      else if (shortScore >= 62 && shortScore - longScore >= 12) tradeMode = '只做空';
+      else if (longScore >= 55 && shortScore >= 55) tradeMode = '多空都可';
+      return {{ longScore, shortScore, riskScore, tradeMode, reason: reasons.join('；') }};
+    }}
+    function v5UpdateStrategyUi(metrics, score) {{
+      strategyConfig.longScore = score.longScore;
+      strategyConfig.shortScore = score.shortScore;
+      strategyConfig.riskScore = score.riskScore;
+      strategyConfig.tradeMode = score.tradeMode;
+      setText('strategyLongScore', String(score.longScore));
+      setText('strategyShortScore', String(score.shortScore));
+      setText('strategyRiskScore', String(score.riskScore));
+      setText('strategyTradeMode', score.tradeMode);
+      setText('strategyReason', score.reason || '等待多周期指标确认');
+      const side = positionConfig.activeSide;
+      const support = metrics.support, resistance = metrics.resistance;
+      const opposite = (side === 'short' && score.longScore - score.shortScore >= 18) || (side === 'long' && score.shortScore - score.longScore >= 18);
+      const cards = [
+        ['当前仓位', side === 'short' ? '当前是空单，锁定点位不随价格跳动；只更新距离止盈止损。' : side === 'long' ? '当前是多单，锁定点位不随价格跳动；只更新距离止盈止损。' : '当前无仓，开多/开空观察区会随实时支撑阻力刷新。'],
+        ['大方向', `${{metrics.ema4h.text}}；4小时RSI ${{metrics.rsi4h.toFixed(1)}}。大周期用于过滤逆势单。`],
+        ['短线动能', `1小时MACD柱 ${{metrics.macd1h.hist.toFixed(1)}}；15分钟MACD柱 ${{metrics.macd15m.hist.toFixed(1)}}；多周期同向时执行质量更高。`],
+        ['量价关系', `15分钟成交量 ${{metrics.volumeRatio15m.toFixed(2)}} 倍；1小时成交量 ${{metrics.volumeRatio1h.toFixed(2)}} 倍；放量突破比缩量反弹更可信。`],
+        ['位置判断', `支撑 ${{fmtPrice(support)}}，阻力 ${{fmtPrice(resistance)}}，VWAP ${{fmtPrice(metrics.vwap24h)}}，当前相对VWAP ${{fmtPct(metrics.priceVsVwapPct)}}。`],
+        ['波动率', `15分钟ATR约 ${{fmtPrice(metrics.atr15m)}} USDT；止损必须放在策略失效点外，保证金随止损距离缩小。`],
+        ['资金情绪', `资金费率 ${{fmtPct(Number.isFinite(metrics.funding) ? metrics.funding : 0)}}；费率过热时不要追拥挤方向。`],
+        ['风险结论', opposite ? '原计划失效风险升高：实时评分已明显转向持仓反方向，建议减仓或手动重新锁定计划。' : `最终模式：${{score.tradeMode}}。100x仓位优先执行锁定止损，不因价格跳动随意改点位。`],
+      ];
+      const host = document.getElementById('strategyCards');
+      if (host) host.innerHTML = cards.map(([title, body]) => `<div class="reason-card"><div class="reason-title">${{title}}</div><p>${{body}}</p></div>`).join('');
+    }}
+    updateLiveStrategyBasis = function(snapshot) {{
+      latestStrategySnapshot = snapshot;
+      const metrics = v5BuildMetrics(snapshot);
+      const score = v5Score(metrics);
+      liveSupport = metrics.support;
+      liveResistance = metrics.resistance;
+      v5UpdateStrategyUi(metrics, score);
+      updateSimplePlan(metrics.latest, metrics.support, metrics.resistance, snapshot.source || '实时行情');
+    }};
+
+    function v5PlanStorageKey() {{ return 'BTC_LOCKED_POSITION_PLAN_V5'; }}
+    function v5StoredPlan() {{
+      try {{ return JSON.parse(localStorage.getItem(v5PlanStorageKey()) || 'null'); }} catch {{ return null; }}
+    }}
+    function v5SavePlan(plan) {{ try {{ localStorage.setItem(v5PlanStorageKey(), JSON.stringify(plan)); }} catch {{ /* ignore storage failure */ }} }}
+    function v5ClearPlan() {{ try {{ localStorage.removeItem(v5PlanStorageKey()); }} catch {{ /* ignore storage failure */ }} }}
+    function currentPositionPlanKey() {{
+      const side = positionConfig.activeSide || 'flat';
+      const qty = Number(positionConfig.activeQty || 0);
+      const entry = Number(positionConfig.activeEntry || 0);
+      if (side === 'flat' || qty <= 0 || entry <= 0) return 'flat';
+      return `${{side}}|entry:${{Math.round(entry / Math.max(entry * 0.0015, 1))}}|qty:${{Math.round(qty / Math.max(qty * 0.10, 0.000001))}}`;
+    }}
+    function v5SameLifecycle(plan) {{
+      if (!plan) return false;
+      const side = positionConfig.activeSide || 'flat';
+      const qty = Number(positionConfig.activeQty || 0);
+      const entry = Number(positionConfig.activeEntry || 0);
+      if (side === 'flat' || qty <= 0 || entry <= 0) return false;
+      if (plan.side !== side) return false;
+      if (Math.abs(entry / Number(plan.entry || 0) - 1) > 0.0015) return false;
+      if (Math.abs(qty / Number(plan.qty || 0) - 1) > 0.10) return false;
+      return true;
+    }}
+    function v5LockedPlanText(plan) {{
+      const sideText = plan.side === 'short' ? '空单' : '多单';
+      return `${{fmtPrice(plan.tp1)}} / ${{fmtPrice(plan.tp2)}} / ${{fmtPrice(plan.tp3)}} ${{sideText}}分批止盈，核心点位已锁定`;
+    }}
+    function buildShortPlan(latest, support, resistance) {{
+      const entry = Number(positionConfig.activeEntry || latest);
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      const atr = Math.max(Number((latestStrategySnapshot && v5BuildMetrics(latestStrategySnapshot).atr15m) || strategyConfig.atr15m || latest * 0.003), latest * 0.0015);
+      const structuralSupport = Math.min(support, entry - atr);
+      const tp1 = Math.min(structuralSupport, entry - atr * 1.2, entry * 0.992);
+      const tp2 = Math.min(tp1 - atr, structuralSupport - atr * 0.8, entry * 0.984);
+      const tp3 = Math.min(tp2 - atr * 1.2, entry * 0.968);
+      let stop = Math.max(resistance, entry + atr * 1.2, entry * 1.006);
+      if (liq > entry) stop = Math.min(stop, liq * 0.985);
+      if (stop <= entry) stop = entry + atr * 1.2;
+      const add1 = Math.max(resistance * 0.998, entry + atr * 0.7);
+      const add2 = Math.max(add1 + atr * 0.8, resistance * 1.002);
+      const reverseLong1 = Math.min(tp1, support * 1.001);
+      const reverseLong2 = Math.min(tp2, reverseLong1 - atr);
+      return {{
+        side: 'short', key: currentPositionPlanKey(), entry, qty: Number(positionConfig.activeQty || 0), createdAt: fmtTime(new Date()),
+        supportSnapshot: support, resistanceSnapshot: resistance, atrSnapshot: atr, tp1, tp2, tp3, stop, add1, add2, reverseLong1, reverseLong2,
+        takeProfit: `${{fmtPrice(tp1)}} / ${{fmtPrice(tp2)}} / ${{fmtPrice(tp3)}} 空单分批止盈，第一档先减30%-40%`,
+        stopLoss: `${{fmtPrice(stop)}} 空单硬止损；若15分钟收盘站上锁定阻力 ${{fmtPrice(resistance)}}，先减仓或离场`,
+        shortEntry: `加空：反弹 ${{fmtPrice(add1)}} - ${{fmtPrice(add2)}} 受阻再加；跌破 ${{fmtPrice(tp1)}} 后回抽不破可追空`,
+        longEntry: `反手开多：仅在 ${{fmtPrice(reverseLong1)}} - ${{fmtPrice(reverseLong2)}} 支撑企稳，或15分钟站上 ${{fmtPrice(resistance)}} 后回踩不破再开多`,
+        margin: riskAdjustedMarginText('short', stop, latest),
+      }};
+    }}
+    function buildLongPlan(latest, support, resistance) {{
+      const entry = Number(positionConfig.activeEntry || latest);
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      const atr = Math.max(Number((latestStrategySnapshot && v5BuildMetrics(latestStrategySnapshot).atr15m) || strategyConfig.atr15m || latest * 0.003), latest * 0.0015);
+      const structuralResistance = Math.max(resistance, entry + atr);
+      const tp1 = Math.max(structuralResistance, entry + atr * 1.2, entry * 1.008);
+      const tp2 = Math.max(tp1 + atr, structuralResistance + atr * 0.8, entry * 1.016);
+      const tp3 = Math.max(tp2 + atr * 1.2, entry * 1.032);
+      let stop = Math.min(support, entry - atr * 1.2, entry * 0.994);
+      if (liq && liq < entry) stop = Math.max(stop, liq * 1.015);
+      if (stop >= entry) stop = entry - atr * 1.2;
+      const add1 = Math.min(support * 1.002, entry - atr * 0.7);
+      const add2 = Math.min(add1 - atr * 0.8, support * 0.998);
+      const reverseShort1 = Math.max(tp1, resistance * 0.999);
+      const reverseShort2 = Math.max(tp2, reverseShort1 + atr);
+      return {{
+        side: 'long', key: currentPositionPlanKey(), entry, qty: Number(positionConfig.activeQty || 0), createdAt: fmtTime(new Date()),
+        supportSnapshot: support, resistanceSnapshot: resistance, atrSnapshot: atr, tp1, tp2, tp3, stop, add1, add2, reverseShort1, reverseShort2,
+        takeProfit: `${{fmtPrice(tp1)}} / ${{fmtPrice(tp2)}} / ${{fmtPrice(tp3)}} 多单分批止盈，第一档先减30%-40%`,
+        stopLoss: `${{fmtPrice(stop)}} 多单硬止损；若15分钟收盘跌破锁定支撑 ${{fmtPrice(support)}}，先减仓或离场`,
+        shortEntry: `反手开空：反弹 ${{fmtPrice(reverseShort1)}} - ${{fmtPrice(reverseShort2)}} 失败，或跌破 ${{fmtPrice(support)}} 后回抽不破再开空`,
+        longEntry: `加多：回踩 ${{fmtPrice(add1)}} - ${{fmtPrice(add2)}} 企稳再加；突破 ${{fmtPrice(tp1)}} 后回踩不破可追多`,
+        margin: riskAdjustedMarginText('long', stop, latest),
+      }};
+    }}
+    function getOrBuildLockedPositionPlan(latest, support, resistance, force = false) {{
+      const stored = v5StoredPlan();
+      if (!force && v5SameLifecycle(stored)) {{
+        lockedPositionPlan = stored;
+        lockedPositionPlanKey = stored.key || currentPositionPlanKey();
+        return stored;
+      }}
+      lockedPositionPlanKey = currentPositionPlanKey();
+      lockedPositionPlan = positionConfig.activeSide === 'short'
+        ? buildShortPlan(latest, support, resistance)
+        : buildLongPlan(latest, support, resistance);
+      v5SavePlan(lockedPositionPlan);
+      return lockedPositionPlan;
+    }}
+    function triggerStatusText(plan, latest) {{
+      if (!plan || !plan.side) return '等待计划生成';
+      if (plan.side === 'flat') return '无仓观察中：开多/开空触发区会随实时支撑阻力刷新';
+      const tpDistance = plan.side === 'short' ? latest - plan.tp1 : plan.tp1 - latest;
+      const stopDistance = plan.side === 'short' ? plan.stop - latest : latest - plan.stop;
+      const tpText = tpDistance <= 0 ? '已触及第一止盈区' : `距离第一止盈 ${{fmtPrice(tpDistance)}} USDT`;
+      const stopText = stopDistance <= 0 ? '已触及止损区' : `距离止损 ${{fmtPrice(stopDistance)}} USDT`;
+      let supportText = '当前行情仍支持原计划';
+      if ((plan.side === 'short' && Number(strategyConfig.longScore || 0) - Number(strategyConfig.shortScore || 0) >= 18) ||
+          (plan.side === 'long' && Number(strategyConfig.shortScore || 0) - Number(strategyConfig.longScore || 0) >= 18)) {{
+        supportText = '原计划失效风险升高，建议减仓或手动重新锁定';
+      }}
+      return `${{tpText}} · ${{stopText}} · ${{supportText}}`;
+    }}
+    function updateSimplePlan(latest, support, resistance, source) {{
+      liveLatest = Number(latest || liveLatest || 0);
+      latest = liveLatest;
+      support = validPrice(Number(support), latest * 0.99);
+      resistance = validPrice(Number(resistance), latest * 1.01);
+      const side = positionConfig.activeSide;
+      const entry = Number(positionConfig.activeEntry || 0);
+      const liq = Number(positionConfig.liquidationPrice || 0);
+      const hasPosition = side !== 'flat' && Number(positionConfig.activeQty || 0) > 0;
+      const plan = hasPosition ? getOrBuildLockedPositionPlan(latest, support, resistance) : buildFlatPlan(latest, support, resistance);
+      if (!hasPosition) {{ lockedPositionPlan = null; lockedPositionPlanKey = ''; v5ClearPlan(); }}
+      const liqGap = calcLiqGap(side, latest);
+      setText('simpleCurrentPoint', fmtPrice(latest));
+      setText('simpleTakeProfit', plan.takeProfit);
+      setText('simpleStopLoss', plan.stopLoss);
+      setText('simpleShortEntry', plan.shortEntry);
+      setText('simpleLongEntry', plan.longEntry);
+      setText('simpleMarginBudget', plan.margin);
+      setText('simpleTriggerStatus', triggerStatusText(hasPosition ? plan : {{ side: 'flat' }}, latest));
+      const context = side === 'flat'
+        ? `无仓观察计划 · 支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 行情源：${{source}}`
+        : `计划锁定时间 ${{plan.createdAt || '-'}} · 锁定依据：开仓均价 ${{fmtPrice(entry)}} / 支撑快照 ${{fmtPrice(plan.supportSnapshot)}} / 阻力快照 ${{fmtPrice(plan.resistanceSnapshot)}} / ATR ${{fmtPrice(plan.atrSnapshot)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 行情源：${{source}}`;
+      setText('simplePlanContext', context);
+      setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
+      updatePositionUi(latest);
+    }}
+    function v5InstallRelockButton() {{
+      const planSection = document.querySelector('section.plan');
+      if (!planSection || document.getElementById('relockPlanButton')) return;
+      const button = document.createElement('button');
+      button.id = 'relockPlanButton';
+      button.type = 'button';
+      button.textContent = '重新锁定计划';
+      button.style.cssText = 'margin:0 0 10px;padding:8px 12px;border:1px solid #475467;border-radius:8px;background:#fff;color:#17202a;font-weight:700;';
+      button.addEventListener('click', () => {{
+        if (positionConfig.activeSide === 'flat') return;
+        const plan = getOrBuildLockedPositionPlan(liveLatest, liveSupport, liveResistance, true);
+        v5SavePlan(plan);
+        updateSimplePlan(liveLatest, liveSupport, liveResistance, '手动重新锁定');
+      }});
+      const ref = planSection.querySelector('.plan-lines');
+      planSection.insertBefore(button, ref);
+    }}
+    v5InstallRelockButton();
+
+    applyAccountSnapshot = function(account) {{
+      if (!account || !account.ok) return;
+      const syncedAt = account.okxFetchedAt || account.workerFetchedAt || account.updatedAt || new Date().toISOString();
+      const rate = Number(account.cnyRate || positionConfig.fallbackCnyRate || 7.2);
+      const equityUsdt = Number(account.equityUsdt || positionConfig.accountEquity || 0);
+      const equityCny = Number(account.equityCny || equityUsdt * rate);
+      const weekProfitCny = Number(account.weekProfitCny ?? positionConfig.sprintWeeklyProfitCny ?? 0);
+      const weeklyLossLimitCny = Number(account.weeklyLossLimitCny || account.weekRiskCny || positionConfig.sprintWeeklyRiskCny || 0);
+      const weeklyStatus = account.weeklyRiskStatus || (weekProfitCny <= -weeklyLossLimitCny ? '本周禁止开新仓，只允许减仓/止损/平仓' : '本周风控正常');
+      positionConfig.accountEquity = equityUsdt;
+      setText('sprintEquityCny', fmtCny(equityCny));
+      setText('sprintEquity', `${{fmtMoney2(equityUsdt)}} USDT · 汇率 ${{rate.toFixed(3)}}`);
+      setText('sprintWeeklyRisk', `${{weekProfitCny >= 0 ? '+' : ''}}${{fmtCny(weekProfitCny)}} / 最大亏损 ${{fmtCny(weeklyLossLimitCny)}}`);
+      setText('weeklyRiskStatus', weeklyStatus);
+      const hedgeText = account.hasHedgedPositions ? ' · 检测到双向持仓，显示主仓位' : '';
+      setText('accountRefreshState', `成功 · ${{fmtTime(new Date(syncedAt))}}${{hedgeText}}`);
+      if (account.position) {{
+        const p = account.position;
+        const side = p.side || positionConfig.activeSide;
+        positionConfig.activeSide = side;
+        positionConfig.activeQty = Number(p.quantityBtc || positionConfig.activeQty || 0);
+        positionConfig.activeEntry = Number(p.entryPrice || positionConfig.activeEntry || 0);
+        positionConfig.activeLeverage = Number(p.leverage || 100);
+        positionConfig.initialMargin = Number(p.marginUsdt || positionConfig.initialMargin || 0);
+        positionConfig.liquidationPrice = Number(p.liquidationPrice || positionConfig.liquidationPrice || 0);
+        const badge = document.getElementById('positionSideBadge');
+        if (badge) {{
+          badge.textContent = side === 'short' ? '空' : side === 'long' ? '多' : '无仓';
+          badge.classList.toggle('side-short', side === 'short');
+          badge.classList.toggle('side-long', side === 'long');
+        }}
+        setText('positionLeverage', `${{positionConfig.activeLeverage || 100}}x`);
+        setText('positionQty', `${{positionConfig.activeQty || 0}}`);
+        setText('positionEntry', fmtPrice(positionConfig.activeEntry));
+        setText('positionMargin', fmtPrice(positionConfig.initialMargin));
+        setText('positionLiqPrice', fmtPrice(positionConfig.liquidationPrice));
+      }} else {{
+        positionConfig.activeSide = 'flat';
+        positionConfig.activeQty = 0;
+        positionConfig.activeEntry = 0;
+        positionConfig.initialMargin = 0;
+        positionConfig.liquidationPrice = 0;
+        v5ClearPlan();
+        setText('positionSideBadge', '无仓');
+        setText('positionLeverage', '100x');
+        setText('positionQty', '0');
+        setText('positionEntry', '-');
+        setText('positionMargin', '-');
+        setText('positionLiqPrice', '-');
+      }}
+      updateSimplePlan(liveLatest, liveSupport, liveResistance, 'OKX账户实时同步');
+    }};
+
+    function v5MacroDirectionSummary(events) {{
+      const directional = (events || []).find(event => event.status === '已公布') || (events || [])[0];
+      return directional ? directional.btcDirection : '宏观窗口暂不提供明确方向，优先看实时技术评分。';
+    }}
+    async function refreshMacroEvents(reason = 'macro-5m-sync') {{
+      if (!macroWorkerUrl) return;
+      try {{
+        const response = await fetch(withCacheBust(macroWorkerUrl), {{ cache: 'no-store' }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.error || '宏观接口返回失败');
+        const events = payload.events || [];
+        setText('macroSummary', `未来24小时识别到 ${{events.length}} 个宏观事件；数据源：${{payload.source}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
+        setText('macroForecast', v5MacroDirectionSummary(events));
+        setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布数据保留2小时`);
+        const list = document.getElementById('macroEventsList');
+        if (list) {{
+          list.innerHTML = events.map(event => `
+            <li>
+              <strong>${{fmtTime(new Date(event.scheduledAt))}} 北京时间 · ${{event.title}}</strong>
+              <br><span class="small">来源：${{event.source}} · 影响：${{event.impact}} · 状态：${{event.status}}</span>
+              <br><span class="small"><strong>预期：</strong>${{event.forecast || '-'}}</span>
+              <br><span class="small"><strong>前值：</strong>${{event.previous || '-'}}</span>
+              <br><span class="small"><strong>实际值：</strong>${{event.actual || '-'}}</span>
+              <br><span class="small"><strong>BTC方向：</strong>${{event.btcDirection}}</span>
+            </li>`).join('');
+        }}
+      }} catch (error) {{
+        setText('macroSummary', `宏观事件刷新失败：${{String(error).slice(0, 80)}}`);
+      }}
+    }}
+
     refreshLiveMarket('page-load');
     refreshAccount('page-load');
     startOkxWebSocket();
@@ -1027,8 +1452,11 @@ def render_report(
       if (document.visibilityState !== 'hidden' && !websocketHasLivePrice) refreshLiveMarket('REST-15s-fallback');
     }}, 15000);
     setInterval(() => {{
-      if (document.visibilityState !== 'hidden' && websocketHasLivePrice) refreshLiveMarket('REST-60s-sync');
-    }}, 60000);
+      if (document.visibilityState !== 'hidden' && websocketHasLivePrice) refreshLiveMarket('REST-15s-score-sync');
+    }}, 15000);
+    refreshMacroEvents('page-load');
+    setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshMacroEvents('macro-5m-sync'); }}, 300000);
+    setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshMacroEvents('macro-high-impact-30s-sync'); }}, 30000);
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshLiveMarket('page-visible'); }});
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshAccount('page-visible'); }});
     window.addEventListener('focus', () => {{ refreshLiveMarket('window-focus'); refreshAccount('window-focus'); }});

@@ -20,6 +20,16 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("实时账户接口未配置，持仓不会同步", source)
         self.assertIn("account-15s-sync", source)
         self.assertIn("refreshAccountSoon('websocket-price-sync')", source)
+        self.assertIn("function v5SameLifecycle", source)
+        self.assertIn("BTC_LOCKED_POSITION_PLAN_V5", source)
+        self.assertIn("Math.abs(entry / Number(plan.entry || 0) - 1) > 0.0015", source)
+        self.assertIn("Math.abs(qty / Number(plan.qty || 0) - 1) > 0.10", source)
+        self.assertIn("重新锁定计划", source)
+        self.assertIn("REST-15s-score-sync", source)
+        self.assertIn("function v5Score", source)
+        self.assertIn("strategyLongScore", source)
+        self.assertIn("refreshMacroEvents", source)
+        self.assertIn("macroEventsList", source)
 
 
 if __name__ == "__main__":
