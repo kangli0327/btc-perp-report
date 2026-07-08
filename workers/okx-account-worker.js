@@ -236,6 +236,7 @@ async function macroBrief(request, env) {
   if (!events.length) {
     events.push({
       title: "未来24小时暂无已接入的高影响宏观事件",
+      placeholder: true,
       country: "US",
       category: "Macro",
       scheduledAt: now.toISOString(),

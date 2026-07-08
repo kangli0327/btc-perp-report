@@ -17,6 +17,7 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("weeklyRiskStatus", source)
         self.assertIn("function macroBrief", source)
         self.assertIn('url.pathname === "/macro"', source)
+        self.assertIn("placeholder: true", source)
 
 
 if __name__ == "__main__":

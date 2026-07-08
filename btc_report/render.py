@@ -1425,8 +1425,9 @@ def render_report(
         const payload = await response.json();
         if (!payload.ok) throw new Error(payload.error || '宏观接口返回失败');
         const events = payload.events || [];
-        setText('macroSummary', `未来24小时识别到 ${{events.length}} 个宏观事件；数据源：${{payload.source}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
-        setText('macroForecast', v5MacroDirectionSummary(events));
+        const realEvents = events.filter(event => !event.placeholder);
+        setText('macroSummary', `未来24小时识别到 ${{realEvents.length}} 个宏观事件；数据源：${{payload.source}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
+        setText('macroForecast', v5MacroDirectionSummary(realEvents.length ? realEvents : events));
         setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布数据保留2小时`);
         const list = document.getElementById('macroEventsList');
         if (list) {{
