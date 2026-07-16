@@ -30,6 +30,18 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("strategyLongScore", source)
         self.assertIn("refreshMacroEvents", source)
         self.assertIn("macroEventsList", source)
+        self.assertIn("earlyLongWarning", source)
+        self.assertIn("earlyShortWarning", source)
+        self.assertIn("function v5BuildEarlyMetrics", source)
+        self.assertIn("function v5EarlyWarningScore", source)
+        self.assertIn("function updateEarlyWarningUi", source)
+        self.assertIn("candle1m", source)
+        self.assertIn("candle5m", source)
+        self.assertIn("提前做多观察位", source)
+        self.assertIn("提前做空观察位", source)
+        self.assertIn("预警，不是确认", source)
+        self.assertIn("短周期RSI连续回升", source)
+        self.assertIn("点位不自动重算", source)
 
 
 if __name__ == "__main__":

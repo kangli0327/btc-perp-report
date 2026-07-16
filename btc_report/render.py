@@ -367,7 +367,8 @@ def render_report(
 
     <section class="plan">
       <h2>后续操作计划</h2>
-      <p><strong>策略模式：</strong><span id="strategyTradeMode">{html.escape(advice.trade_mode)}</span> · 多头评分 <span id="strategyLongScore">{advice.long_score}</span> / 空头评分 <span id="strategyShortScore">{advice.short_score}</span> / 风险评分 <span id="strategyRiskScore">{advice.risk_score}</span></p>
+      <p><strong>策略模式：</strong><span id="strategyTradeMode">{html.escape(advice.trade_mode)}</span> · 多头确认分 <span id="strategyLongScore">{advice.long_score}</span> / 空头确认分 <span id="strategyShortScore">{advice.short_score}</span> / 风险评分 <span id="strategyRiskScore">{advice.risk_score}</span></p>
+      <p><strong>提前预警：</strong>多头 <span id="earlyLongWarning">-</span> / 空头 <span id="earlyShortWarning">-</span> · <span id="earlyWarningMode">等待1m/5m数据</span></p>
       <div class="plan-lines">
         <div class="plan-line"><div class="plan-label">当前点位</div><div id="simpleCurrentPoint">{fmt_price(indicators.latest_price)}</div></div>
         <div class="plan-line"><div class="plan-label">止盈点位</div><div id="simpleTakeProfit">{fmt_price(indicators.latest_price * 0.988)} / {fmt_price(indicators.support)} / {fmt_price(indicators.support * 0.965)} 分批止盈</div></div>
@@ -661,16 +662,20 @@ def render_report(
       }};
     }}
     function buildFlatPlan(latest, support, resistance) {{
-      const long1 = Math.min(support * 1.002, latest * 0.996);
-      const long2 = Math.max(resistance * 1.002, latest * 1.004);
-      const short1 = Math.max(resistance * 0.998, latest * 1.002);
-      const short2 = Math.min(support * 0.998, latest * 0.996);
+      const warning = latestEarlyWarning || {{}};
+      const atr = Math.max(Number((latestStrategySnapshot && v5BuildMetrics(latestStrategySnapshot).atr15m) || strategyConfig.atr15m || latest * 0.003), latest * 0.0015);
+      const longWatch = validPrice(Number(warning.longWatch), Math.min(support * 1.002, latest * 0.996));
+      const longConfirm = validPrice(Number(warning.longBreak), Math.max(resistance * 1.001, latest + atr * 0.15));
+      const shortWatch = validPrice(Number(warning.shortWatch), Math.max(resistance * 0.998, latest * 1.002));
+      const shortConfirm = validPrice(Number(warning.shortBreak), Math.min(support * 0.999, latest - atr * 0.15));
+      const invalidLong = validPrice(Number(warning.invalidLong), support - atr * 0.25);
+      const invalidShort = validPrice(Number(warning.invalidShort), resistance + atr * 0.25);
       return {{
         takeProfit: '暂无持仓，不给持仓止盈；先等开仓触发后再生成止盈目标',
         stopLoss: '暂无持仓，不给持仓止损；新仓必须先确定止损再决定保证金',
-        shortEntry: `开空：反弹 ${{fmtPrice(short1)}} 附近受阻，或跌破 ${{fmtPrice(short2)}} 后回抽不破再考虑`,
-        longEntry: `开多：回踩 ${{fmtPrice(long1)}} 附近企稳，或突破 ${{fmtPrice(long2)}} 后回踩不破再考虑`,
-        margin: `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；无仓时先等触发，不追中间价`,
+        shortEntry: `提前做空观察位：${{fmtPrice(shortWatch)}} 受阻或 ${{fmtPrice(shortConfirm)}} 跌破前预警；确认触发位：跌破后回抽不破；失效条件：重新站上 ${{fmtPrice(invalidShort)}}`,
+        longEntry: `提前做多观察位：${{fmtPrice(longWatch)}} 企稳或 ${{fmtPrice(longConfirm)}} 突破前预警；确认触发位：站上后回踩不破；失效条件：重新跌破 ${{fmtPrice(invalidLong)}}`,
+        margin: `本次最大保证金：${{fmtPrice(positionConfig.sprintSingleRisk * 6)}} USDT；${{warning.warningMode || '预警仅用于提前观察，不等于满仓执行'}}`,
       }};
     }}
     function getOrBuildLockedPositionPlan(latest, support, resistance) {{
@@ -811,6 +816,8 @@ def render_report(
       return Math.max(...candidates.filter(v => v < latest));
     }}
     function applyLiveSnapshot(snapshot, reason) {{
+      const c1m = snapshot.c1m || [];
+      const c5m = snapshot.c5m || [];
       const c15 = snapshot.c15;
       const c1h = snapshot.c1h;
       const c4h = snapshot.c4h;
@@ -835,15 +842,17 @@ def render_report(
       setText('liveFunding', fmtPct(snapshot.funding));
       setText('liveOpenInterest', fmtPrice(snapshot.openInterest));
       setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：${{snapshot.source}}`);
-      updateLiveStrategyBasis(snapshot);
+      updateLiveStrategyBasis({{ ...snapshot, c1m, c5m }});
       updateSimplePlan(latest, support, resistance, snapshot.source);
       setText('liveFetchMeta', `实时抓取状态：成功 · ${{snapshot.source}} · 标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}} · 模式：${{reason}}`);
       const status = document.getElementById('liveStatus');
       if (status) status.innerHTML = `<li>本次已现场获取行情；数据源：${{snapshot.source}}；触发方式：${{reason}}；手机端会在OKX失败后自动尝试Binance和Bybit。</li>`;
     }}
     async function fetchBinanceSnapshot() {{
-      const [premium, c15Raw, c1hRaw, c4hRaw, oiRaw] = await Promise.all([
+      const [premium, c1mRaw, c5mRaw, c15Raw, c1hRaw, c4hRaw, oiRaw] = await Promise.all([
         fetchAbsoluteJson('Binance mark price', ['https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT']),
+        fetchAbsoluteJson('Binance 1m candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=120']),
+        fetchAbsoluteJson('Binance 5m candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=120']),
         fetchAbsoluteJson('Binance 15m candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=15m&limit=96']),
         fetchAbsoluteJson('Binance 1h candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=24']),
         fetchAbsoluteJson('Binance 4h candles', ['https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=8']),
@@ -854,14 +863,18 @@ def render_report(
         latest: Number(premium.markPrice || premium.indexPrice || 0),
         funding: Number(premium.lastFundingRate || 0) * 100,
         openInterest: Number(oiRaw.openInterest || NaN),
+        c1m: parseForwardCandles(c1mRaw || []),
+        c5m: parseForwardCandles(c5mRaw || []),
         c15: parseForwardCandles(c15Raw || []),
         c1h: parseForwardCandles(c1hRaw || []),
         c4h: parseForwardCandles(c4hRaw || [])
       }};
     }}
     async function fetchBybitSnapshot() {{
-      const [ticker, c15Raw, c1hRaw, c4hRaw] = await Promise.all([
+      const [ticker, c1mRaw, c5mRaw, c15Raw, c1hRaw, c4hRaw] = await Promise.all([
         fetchAbsoluteJson('Bybit ticker', ['https://api.bybit.com/v5/market/tickers?category=linear&symbol=BTCUSDT']),
+        fetchAbsoluteJson('Bybit 1m candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=1&limit=120']),
+        fetchAbsoluteJson('Bybit 5m candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=5&limit=120']),
         fetchAbsoluteJson('Bybit 15m candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=15&limit=96']),
         fetchAbsoluteJson('Bybit 1h candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=24']),
         fetchAbsoluteJson('Bybit 4h candles', ['https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=240&limit=8'])
@@ -872,6 +885,8 @@ def render_report(
         latest: Number(row.markPrice || row.lastPrice || 0),
         funding: Number(row.fundingRate || 0) * 100,
         openInterest: Number(row.openInterest || NaN),
+        c1m: parseReverseCandles((c1mRaw.result && c1mRaw.result.list) || []),
+        c5m: parseReverseCandles((c5mRaw.result && c5mRaw.result.list) || []),
         c15: parseReverseCandles((c15Raw.result && c15Raw.result.list) || []),
         c1h: parseReverseCandles((c1hRaw.result && c1hRaw.result.list) || []),
         c4h: parseReverseCandles((c4hRaw.result && c4hRaw.result.list) || [])
@@ -896,7 +911,9 @@ def render_report(
       liveRefreshInFlight = true;
       try {{
         setText('liveFetchMeta', `实时抓取状态：正在请求 OKX · ${{fmtTime(new Date())}}`);
-        const [c15j, c1hj, c4hj, fundingResult, oiResult, mj] = await Promise.all([
+        const [c1mj, c5mj, c15j, c1hj, c4hj, fundingResult, oiResult, mj] = await Promise.all([
+          fetchJson('1m candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1m&limit=120'),
+          fetchJson('5m candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=120'),
           fetchJson('15m candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=96'),
           fetchJson('1h candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=24'),
           fetchJson('4h candles', '/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=8'),
@@ -904,6 +921,8 @@ def render_report(
           fetchJsonSoft('open interest', '/api/v5/public/open-interest?instType=SWAP&instId=BTC-USDT-SWAP'),
           fetchJson('mark price', '/api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP')
         ]);
+        const c1m = parseCandles(c1mj.data || []);
+        const c5m = parseCandles(c5mj.data || []);
         const c15 = parseCandles(c15j.data || []);
         const c1h = parseCandles(c1hj.data || []);
         const c4h = parseCandles(c4hj.data || []);
@@ -944,7 +963,7 @@ def render_report(
         setText('liveFunding', fmtPct(funding));
         setText('liveOpenInterest', fmtPrice(openInterest));
         setText('liveStructure', `短线支撑：${{fmtPrice(support)}} · 短线阻力：${{fmtPrice(resistance)}} · 15分钟波动：${{fmtPct(vol)}} · 成交量倍率：${{volumeRatio.toFixed(2)}}x · 数据：浏览器现场抓取`);
-        updateLiveStrategyBasis({{ latest, funding, openInterest, c15, c1h, c4h, source: 'OKX REST现场抓取' }});
+        updateLiveStrategyBasis({{ latest, funding, openInterest, c1m, c5m, c15, c1h, c4h, source: 'OKX REST现场抓取' }});
         updateSimplePlan(latest, support, resistance, 'OKX REST现场抓取');
         const softWarnings = [fundingResult, oiResult].filter(item => !item.ok).map(item => `${{item.label}}失败：${{item.error}}`);
         setText('liveFetchMeta', `实时抓取状态：成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}} · 模式：${{reason}}${{softWarnings.length ? ' · 部分数据缺失：' + softWarnings.join('；') : ''}}`);
@@ -972,6 +991,8 @@ def render_report(
             op: 'subscribe',
             args: [
               {{ channel: 'mark-price', instId: 'BTC-USDT-SWAP' }},
+              {{ channel: 'candle1m', instId: 'BTC-USDT-SWAP' }},
+              {{ channel: 'candle5m', instId: 'BTC-USDT-SWAP' }},
               {{ channel: 'candle15m', instId: 'BTC-USDT-SWAP' }}
             ]
           }}));
@@ -991,6 +1012,26 @@ def render_report(
                 updateSimplePlan(latest, liveSupport, liveResistance, 'OKX WebSocket实时推送');
                 refreshAccountSoon('websocket-price-sync');
                 setText('liveFetchMeta', `实时抓取状态：WebSocket成功 · OKX标记价 ${{fmtPrice(latest)}} · 本机时间 ${{fmtTime(new Date())}}`);
+              }}
+            }}
+            if ((arg.channel === 'candle1m' || arg.channel === 'candle5m') && Array.isArray(row)) {{
+              const high = Number(row[2]);
+              const low = Number(row[3]);
+              const close = Number(row[4]);
+              const quoteVolume = Number(row[7] || row[6] || row[5] || 0);
+              if (Number.isFinite(high) && Number.isFinite(low) && close > 0) {{
+                const candle = {{ high, low, close, quoteVolume }};
+                if (arg.channel === 'candle1m') liveEarlyCandles1m = [...liveEarlyCandles1m.slice(-159), candle];
+                if (arg.channel === 'candle5m') liveEarlyCandles5m = [...liveEarlyCandles5m.slice(-159), candle];
+                if (latestStrategySnapshot) {{
+                  updateLiveStrategyBasis({{
+                    ...latestStrategySnapshot,
+                    latest: close,
+                    c1m: liveEarlyCandles1m,
+                    c5m: liveEarlyCandles5m,
+                    source: 'OKX WebSocket短周期预警'
+                  }});
+                }}
               }}
             }}
             if (arg.channel === 'candle15m' && Array.isArray(row)) {{
@@ -1025,6 +1066,9 @@ def render_report(
     const macroWorkerBaseUrl = accountWorkerUrl && accountWorkerUrl.endsWith('/') ? accountWorkerUrl.slice(0, -1) : accountWorkerUrl;
     const macroWorkerUrl = macroWorkerBaseUrl ? `${{macroWorkerBaseUrl}}/macro` : '';
     let latestStrategySnapshot = null;
+    let liveEarlyCandles1m = [];
+    let liveEarlyCandles5m = [];
+    let latestEarlyWarning = {{ longWarningScore: 0, shortWarningScore: 0, warningMode: '等待1m/5m数据', warningReason: '' }};
 
     function v5Clamp(value, min, max) {{ return Math.max(min, Math.min(max, value)); }}
     function v5Closes(candles) {{ return (candles || []).map(c => Number(c.close || 0)).filter(v => Number.isFinite(v) && v > 0); }}
@@ -1102,6 +1146,138 @@ def render_report(
       if (latest > e20 && e20 > e60) return {{ text: 'EMA偏多', e20, e60, e120 }};
       if (latest < e20 && e20 < e60) return {{ text: 'EMA偏空', e20, e60, e120 }};
       return {{ text: 'EMA震荡', e20, e60, e120 }};
+    }}
+    function v5IsHigherLows(candles, count = 3) {{
+      const slice = (candles || []).slice(-count);
+      return slice.length >= count && slice.every((c, i) => i === 0 || Number(c.low) > Number(slice[i - 1].low));
+    }}
+    function v5IsLowerHighs(candles, count = 3) {{
+      const slice = (candles || []).slice(-count);
+      return slice.length >= count && slice.every((c, i) => i === 0 || Number(c.high) < Number(slice[i - 1].high));
+    }}
+    function v5RsiSlope(values, length = 14) {{
+      if (values.length < length + 5) return 0;
+      const recent = [];
+      for (let i = 4; i >= 0; i -= 1) {{
+        recent.push(v5Rsi(values.slice(0, values.length - i), length));
+      }}
+      return recent[recent.length - 1] - recent[0];
+    }}
+    function v5VolumeSlope(candles, length = 20) {{
+      if (!candles || candles.length < 4) return 1;
+      const previous = candles.slice(0, -3).slice(-length);
+      const base = previous.reduce((a, c) => a + Number(c.quoteVolume || 0), 0) / Math.max(previous.length, 1);
+      const recent = candles.slice(-3).reduce((a, c) => a + Number(c.quoteVolume || 0), 0) / 3;
+      return base ? recent / base : 1;
+    }}
+    function v5BuildEarlyMetrics(snapshot, confirmMetrics) {{
+      const c1m = (snapshot.c1m && snapshot.c1m.length ? snapshot.c1m : liveEarlyCandles1m) || [];
+      const c5m = (snapshot.c5m && snapshot.c5m.length ? snapshot.c5m : liveEarlyCandles5m) || [];
+      if (c1m.length) liveEarlyCandles1m = c1m.slice(-160);
+      if (c5m.length) liveEarlyCandles5m = c5m.slice(-160);
+      const latest = Number(confirmMetrics.latest || snapshot.latest || liveLatest || 0);
+      const closes1m = v5Closes(c1m);
+      const closes5m = v5Closes(c5m);
+      const ema20_5m = v5Ema(closes5m, 20);
+      const vwap5m = v5Vwap(c5m.slice(-60));
+      const rsiSlope1m = v5RsiSlope(closes1m);
+      const rsiSlope5m = v5RsiSlope(closes5m);
+      const volSlope1m = v5VolumeSlope(c1m);
+      const volSlope5m = v5VolumeSlope(c5m);
+      const atrGate = Math.max(Number(confirmMetrics.atr15m || 0) * 0.25, latest * 0.001);
+      const distanceToResistance = Math.abs(confirmMetrics.resistance - latest);
+      const distanceToSupport = Math.abs(latest - confirmMetrics.support);
+      const nearResistance = distanceToResistance <= atrGate;
+      const nearSupport = distanceToSupport <= atrGate;
+      const last15 = (snapshot.c15 || []).slice(-1)[0] || null;
+      return {{
+        latest,
+        hasEarlyData: c1m.length >= 5 || c5m.length >= 5,
+        c1m,
+        c5m,
+        higherLows1m: v5IsHigherLows(c1m),
+        higherLows5m: v5IsHigherLows(c5m),
+        lowerHighs1m: v5IsLowerHighs(c1m),
+        lowerHighs5m: v5IsLowerHighs(c5m),
+        rsiSlope1m,
+        rsiSlope5m,
+        volSlope1m,
+        volSlope5m,
+        ema20_5m,
+        vwap5m,
+        nearResistance,
+        nearSupport,
+        atrGate,
+        support: confirmMetrics.support,
+        resistance: confirmMetrics.resistance,
+        atr15m: confirmMetrics.atr15m,
+        fifteenBreakoutUp: Boolean(last15 && latest > Math.max(Number(last15.high || 0), confirmMetrics.resistance)),
+        fifteenBreakoutDown: Boolean(last15 && latest < Math.min(Number(last15.low || Infinity), confirmMetrics.support)),
+      }};
+    }}
+    function v5EarlyWarningScore(early, confirmMetrics, confirmScore) {{
+      let longWarningScore = 25;
+      let shortWarningScore = 25;
+      const reasons = [];
+      if (early.nearResistance) {{ longWarningScore += 10; reasons.push('价格进入阻力临界区，观察突破前动作'); }}
+      if (early.nearSupport) {{ shortWarningScore += 10; reasons.push('价格进入支撑临界区，观察跌破前动作'); }}
+      if (early.higherLows1m) longWarningScore += 10;
+      if (early.higherLows5m) {{ longWarningScore += 16; reasons.push('5分钟连续抬高低点，多头预热'); }}
+      if (early.lowerHighs1m) shortWarningScore += 10;
+      if (early.lowerHighs5m) {{ shortWarningScore += 16; reasons.push('5分钟连续降低高点，空头预热'); }}
+      if (early.rsiSlope1m > 4 || early.rsiSlope5m > 4) {{ longWarningScore += 12; reasons.push('短周期RSI连续回升'); }}
+      if (early.rsiSlope1m < -4 || early.rsiSlope5m < -4) {{ shortWarningScore += 12; reasons.push('短周期RSI连续回落'); }}
+      if (early.volSlope5m > 1.25 && early.latest >= early.vwap5m) longWarningScore += 10;
+      if (early.volSlope5m > 1.25 && early.latest <= early.vwap5m) shortWarningScore += 10;
+      if (!early.hasEarlyData) {{
+        return {{
+          longWarningScore: 0,
+          shortWarningScore: 0,
+          warningMode: '等待1m/5m数据',
+          warningReason: '短周期预警数据尚未就绪',
+          longWatch: confirmMetrics.support,
+          longBreak: confirmMetrics.resistance,
+          shortWatch: confirmMetrics.resistance,
+          shortBreak: confirmMetrics.support,
+          invalidLong: confirmMetrics.support - confirmMetrics.atr15m * 0.25,
+          invalidShort: confirmMetrics.resistance + confirmMetrics.atr15m * 0.25,
+        }};
+      }}
+      if (early.vwap5m && early.ema20_5m && early.latest > early.vwap5m && early.latest > early.ema20_5m) longWarningScore += 8;
+      if (early.vwap5m && early.ema20_5m && early.latest < early.vwap5m && early.latest < early.ema20_5m) shortWarningScore += 8;
+      if (early.fifteenBreakoutUp) longWarningScore += 12;
+      if (early.fifteenBreakoutDown) shortWarningScore += 12;
+      longWarningScore = v5Clamp(Math.round(longWarningScore), 0, 100);
+      shortWarningScore = v5Clamp(Math.round(shortWarningScore), 0, 100);
+      let warningMode = '等待预警';
+      if (longWarningScore >= 70 && confirmScore.longScore < 62) warningMode = '多头预警，不是确认；轻仓或等下一根短周期K线';
+      else if (shortWarningScore >= 70 && confirmScore.shortScore < 62) warningMode = '空头预警，不是确认；轻仓或等下一根短周期K线';
+      else if (longWarningScore >= 70 && confirmScore.longScore >= 62) warningMode = '多头预警已转确认，可执行计划';
+      else if (shortWarningScore >= 70 && confirmScore.shortScore >= 62) warningMode = '空头预警已转确认，可执行计划';
+      else if (longWarningScore > shortWarningScore + 12) warningMode = '多头预热';
+      else if (shortWarningScore > longWarningScore + 12) warningMode = '空头预热';
+      const longWatch = Math.min(early.support + early.atr15m * 0.35, early.vwap5m || early.latest, early.resistance - early.atr15m * 0.15);
+      const longBreak = Math.max(early.resistance - early.atr15m * 0.10, early.latest + early.atr15m * 0.12);
+      const shortWatch = Math.max(early.resistance - early.atr15m * 0.35, early.vwap5m || early.latest, early.support + early.atr15m * 0.15);
+      const shortBreak = Math.min(early.support + early.atr15m * 0.10, early.latest - early.atr15m * 0.12);
+      return {{
+        longWarningScore,
+        shortWarningScore,
+        warningMode,
+        warningReason: reasons.slice(0, 3).join('；') || '短周期微结构尚未给出明显提前信号',
+        longWatch,
+        longBreak,
+        shortWatch,
+        shortBreak,
+        invalidLong: early.support - early.atr15m * 0.25,
+        invalidShort: early.resistance + early.atr15m * 0.25,
+      }};
+    }}
+    function updateEarlyWarningUi(warning) {{
+      latestEarlyWarning = warning;
+      setText('earlyLongWarning', String(warning.longWarningScore));
+      setText('earlyShortWarning', String(warning.shortWarningScore));
+      setText('earlyWarningMode', `${{warning.warningMode}} · ${{warning.warningReason}}`);
     }}
     function v5BuildMetrics(snapshot) {{
       const c15 = snapshot.c15 || [], c1h = snapshot.c1h || [], c4h = snapshot.c4h || [];
@@ -1203,9 +1379,12 @@ def render_report(
       latestStrategySnapshot = snapshot;
       const metrics = v5BuildMetrics(snapshot);
       const score = v5Score(metrics);
+      const earlyMetrics = v5BuildEarlyMetrics(snapshot, metrics);
+      const earlyWarning = v5EarlyWarningScore(earlyMetrics, metrics, score);
       liveSupport = metrics.support;
       liveResistance = metrics.resistance;
       v5UpdateStrategyUi(metrics, score);
+      updateEarlyWarningUi(earlyWarning);
       updateSimplePlan(metrics.latest, metrics.support, metrics.resistance, snapshot.source || '实时行情');
     }};
 
@@ -1312,6 +1491,10 @@ def render_report(
       if ((plan.side === 'short' && Number(strategyConfig.longScore || 0) - Number(strategyConfig.shortScore || 0) >= 18) ||
           (plan.side === 'long' && Number(strategyConfig.shortScore || 0) - Number(strategyConfig.longScore || 0) >= 18)) {{
         supportText = '原计划失效风险升高，建议减仓或手动重新锁定';
+      }}
+      if ((plan.side === 'short' && Number(latestEarlyWarning.longWarningScore || 0) >= 70) ||
+          (plan.side === 'long' && Number(latestEarlyWarning.shortWarningScore || 0) >= 70)) {{
+        supportText = `反向预警升高：${{latestEarlyWarning.warningMode}}，点位不自动重算`;
       }}
       return `${{tpText}} · ${{stopText}} · ${{supportText}}`;
     }}
