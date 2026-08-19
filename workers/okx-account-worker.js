@@ -1,6 +1,7 @@
 const OKX_BASE = "https://www.okx.com";
 const FALLBACK_CNY_RATE = 7.2;
 const TE_BASE = "https://api.tradingeconomics.com";
+const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -208,12 +209,61 @@ function normalizeMacroEvent(item, now = new Date()) {
   };
 }
 
+function officialMacroEvents(now) {
+  return [
+    {
+      title: "美国7月CPI通胀数据",
+      country: "US",
+      category: "Inflation",
+      scheduledAt: "2026-08-12T12:30:00.000Z",
+      impact: "高",
+      forecast: "精确一致预期未接入；市场大致预期温和降温",
+      previous: "6月CPI同比3.5%；核心CPI同比2.6%",
+      actual: "CPI环比+0.1%、同比+3.4%；核心CPI环比+0.2%、同比+2.5%",
+      status: "已公布",
+      source: "BLS官方CPI发布",
+      btcDirection: "中性偏利多BTC：通胀和核心通胀继续降温，但仍高于长期目标，追多需要看美元和美债是否配合。",
+    },
+    {
+      title: "美国8月CPI通胀数据",
+      country: "US",
+      category: "Inflation",
+      scheduledAt: "2026-09-11T12:30:00.000Z",
+      impact: "高",
+      forecast: "待公布前更新一致预期",
+      previous: "7月CPI同比3.4%；核心CPI同比2.5%",
+      actual: "",
+      status: "待公布",
+      source: "BLS官方CPI日程",
+      btcDirection: "待公布：若通胀继续降温偏利多BTC；若重新升温偏利空BTC。",
+    },
+  ].filter((event) => {
+    const t = new Date(event.scheduledAt);
+    const until = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const recentFrom = new Date(now.getTime() - RECENT_MACRO_KEEP_MS);
+    return (t >= now && t <= until) || (event.status === "已公布" && t >= recentFrom && t <= now);
+  });
+}
+
+function dedupeMacroEvents(events) {
+  const seen = new Set();
+  const deduped = [];
+  for (const event of events) {
+    const key = `${event.title}|${event.scheduledAt}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(event);
+  }
+  return deduped.sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+}
+
 async function macroBrief(request, env) {
   const now = new Date();
   const until = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  const keepFrom = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+  const recentFrom = new Date(now.getTime() - RECENT_MACRO_KEEP_MS);
   const warnings = [];
   let events = [];
+  const sources = [];
   if (env.TRADING_ECONOMICS_KEY) {
     try {
       const url = `${TE_BASE}/calendar?c=${encodeURIComponent(env.TRADING_ECONOMICS_KEY)}&importance=2,3`;
@@ -224,17 +274,30 @@ async function macroBrief(request, env) {
         .map((item) => normalizeMacroEvent(item, now))
         .filter((event) => {
           const t = new Date(event.scheduledAt);
-          return t >= keepFrom && t <= until;
+          return t >= recentFrom && t <= until;
         })
         .slice(0, 12);
+      if (events.length) sources.push("trading-economics");
     } catch (error) {
       warnings.push(`Trading Economics 获取失败：${String(error).slice(0, 120)}`);
     }
   } else {
-    warnings.push("Trading Economics Key 未配置，实时预期/实际值源未启用");
+    warnings.push("Trading Economics Key 未配置，精确一致预期/全量实际值源未启用");
   }
-  if (!events.length) {
-    events.push({
+  const officialEvents = officialMacroEvents(now);
+  if (officialEvents.length) sources.push("official-macro-fallback");
+  const combined = dedupeMacroEvents([...events, ...officialEvents]);
+  const upcomingEvents = combined.filter((event) => {
+    const t = new Date(event.scheduledAt);
+    return !event.placeholder && t >= now && t <= until;
+  });
+  const recentReleasedEvents = combined.filter((event) => {
+    const t = new Date(event.scheduledAt);
+    return !event.placeholder && event.status === "已公布" && t >= recentFrom && t <= now;
+  });
+  let visibleEvents = [...upcomingEvents, ...recentReleasedEvents].slice(0, 12);
+  if (!visibleEvents.length) {
+    visibleEvents = [{
       title: "未来24小时暂无已接入的高影响宏观事件",
       placeholder: true,
       country: "US",
@@ -245,18 +308,25 @@ async function macroBrief(request, env) {
       previous: "",
       actual: "",
       status: "观察",
-      source: env.TRADING_ECONOMICS_KEY ? "Trading Economics" : "fallback",
-      btcDirection: "宏观窗口暂不提供明确方向，优先看实时技术评分和资金费率。",
-    });
+      source: sources.length ? sources.join("+") : "fallback",
+      btcDirection: "宏观窗口暂不提供明确方向，优先看实时技术评分。",
+    }];
   }
   return jsonResponse({
     ok: true,
-    source: env.TRADING_ECONOMICS_KEY ? "trading-economics" : "fallback",
+    source: sources.length ? sources.join("+") : "fallback",
     updatedAt: now.toISOString(),
     windowStart: now.toISOString(),
     windowEnd: until.toISOString(),
-    events,
+    events: visibleEvents,
+    upcomingEvents,
+    recentReleasedEvents,
     warnings,
+    macroStatus: {
+      tradingEconomicsConfigured: Boolean(env.TRADING_ECONOMICS_KEY),
+      officialFallbackActive: true,
+      recentKeepHours: RECENT_MACRO_KEEP_MS / (60 * 60 * 1000),
+    },
   });
 }
 

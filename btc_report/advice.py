@@ -174,37 +174,44 @@ def _rsi_words(value: float) -> str:
 
 
 def _strategy_cards(ind: Indicators, trade_mode: str, liq_gap_pct: float) -> list[tuple[str, str]]:
-    direction = (
-        f"4小时{ind.ema_state_4h}，{_rsi_words(ind.rsi_4h)}；这决定了大方向过滤，逆势单只做短线，不适合重仓硬扛。"
-    )
-    momentum = (
-        f"1小时{_macd_words(ind.macd_hist_1h)}，15分钟{_macd_words(ind.macd_hist_15m)}；如果两个周期同向，入场可信度更高，冲突时先等下一根15分钟K线确认。"
-    )
-    volume = (
-        f"15分钟成交量是均量的{ind.volume_ratio_15m:.2f}倍，1小时成交量是均量的{ind.volume_ratio_1h:.2f}倍；{ind.position_context}。"
-    )
-    location = (
-        f"当前支撑约{_price(ind.support)}，阻力约{_price(ind.resistance)}，日内VWAP约{_price(ind.vwap_24h)}；价格相对VWAP {ind.price_vs_vwap_pct:+.2f}%，用来判断是在资金平均成本上方还是下方。"
-    )
-    volatility = (
-        f"15分钟ATR约{_price(ind.atr_15m)} USDT（{ind.atr_15m_pct:.2f}%）；止损不能小于正常波动，若止损太远则必须缩小保证金。"
-    )
-    funding = (
-        f"资金费率{ind.funding_rate_pct:+.3f}%；正费率且价格走弱偏利空，负费率且价格抗跌偏利多，极端费率说明一边太拥挤。"
-    )
-    risk = (
-        f"最终模式：{trade_mode}。100x下优先看止损和强平，距离强平约{liq_gap_pct:.2f}%时，不管指标多漂亮都不能无条件加仓。"
-        if liq_gap_pct
-        else f"最终模式：{trade_mode}。100x下必须先确定止损，再决定保证金大小。"
-    )
+    direction = f"4小时{ind.ema_state_4h}，{_rsi_words(ind.rsi_4h)}。"
+    if ind.macd_hist_1h > 0 and ind.macd_hist_15m > 0:
+        momentum = "短线偏多，回踩不破更适合找多。"
+    elif ind.macd_hist_1h < 0 and ind.macd_hist_15m < 0:
+        momentum = "短线偏空，反弹不过更适合找空。"
+    elif ind.macd_hist_1h < 0 < ind.macd_hist_15m:
+        momentum = "15分钟在反弹，但1小时仍偏空；多单只适合轻仓试探。"
+    elif ind.macd_hist_15m < 0 < ind.macd_hist_1h:
+        momentum = "15分钟转弱，但1小时仍偏多；空单只适合短打。"
+    else:
+        momentum = "短线动能不清晰，先等下一根短周期K线。"
+    if ind.volume_ratio_15m >= 1.35 and ind.price_vs_vwap_pct > 0:
+        volume = "放量站上VWAP，短线买盘更主动。"
+    elif ind.volume_ratio_15m >= 1.35 and ind.price_vs_vwap_pct < 0:
+        volume = "放量跌破VWAP，短线卖盘更主动。"
+    elif ind.volume_ratio_15m < 0.8 and ind.volume_ratio_1h < 0.9:
+        volume = "量能偏弱，当前突破或反弹可信度不足。"
+    elif ind.price_vs_vwap_pct > 0:
+        volume = "价格在VWAP上方，买盘略占优。"
+    elif ind.price_vs_vwap_pct < 0:
+        volume = "价格在VWAP下方，卖盘略占优。"
+    else:
+        volume = "量价中性，先看支撑阻力能否被有效突破。"
+    if ind.funding_rate_pct >= 0.03:
+        funding = f"资金费率{ind.funding_rate_pct:+.3f}%，多头明显拥挤。"
+    elif ind.funding_rate_pct >= 0.01:
+        funding = f"资金费率{ind.funding_rate_pct:+.3f}%，多头略拥挤。"
+    elif ind.funding_rate_pct <= -0.03:
+        funding = f"资金费率{ind.funding_rate_pct:+.3f}%，空头明显拥挤。"
+    elif ind.funding_rate_pct <= -0.01:
+        funding = f"资金费率{ind.funding_rate_pct:+.3f}%，空头略拥挤。"
+    else:
+        funding = f"资金费率{ind.funding_rate_pct:+.3f}%，资金情绪温和。"
     return [
         ("大方向", direction),
         ("短线动能", momentum),
         ("量价关系", volume),
-        ("位置判断", location),
-        ("波动率", volatility),
-        ("资金情绪", funding),
-        ("风险结论", risk),
+        ("资金费率", funding),
     ]
 
 

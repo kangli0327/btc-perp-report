@@ -18,6 +18,12 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("function macroBrief", source)
         self.assertIn('url.pathname === "/macro"', source)
         self.assertIn("placeholder: true", source)
+        self.assertIn("function officialMacroEvents", source)
+        self.assertIn("recentReleasedEvents", source)
+        self.assertIn("upcomingEvents", source)
+        self.assertIn("RECENT_MACRO_KEEP_MS", source)
+        self.assertIn("美国7月CPI通胀数据", source)
+        self.assertIn("macroStatus", source)
 
 
 if __name__ == "__main__":

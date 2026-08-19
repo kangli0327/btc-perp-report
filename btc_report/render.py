@@ -393,7 +393,10 @@ def render_report(
       <p id="macroSummary">{html.escape(macro_brief.summary)}</p>
       <p><strong>BTC波动预测：</strong><span id="macroForecast">{html.escape(macro_brief.forecast)}</span></p>
       <p class="small" id="macroWindow">窗口：{macro_brief.window_start:%Y-%m-%d %H:%M} - {macro_brief.window_end:%Y-%m-%d %H:%M} 北京时间</p>
+      <p class="small" id="macroWarnings"></p>
       <ul id="macroEventsList">{macro_events_html}</ul>
+      <h3>最近已公布关键数据</h3>
+      <ul id="recentMacroEventsList"></ul>
     </section>
 
     <section>
@@ -726,11 +729,46 @@ def render_report(
       setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
       updatePositionUi(latest);
     }}
+    function strategyTrendConclusion(emaText, rsi4h) {{
+      const rsi = Number(rsi4h);
+      if (/多|上方|bull/i.test(String(emaText)) && rsi >= 50) return `${{emaText}}；大方向偏多。`;
+      if (/空|下方|bear/i.test(String(emaText)) && rsi <= 50) return `${{emaText}}；大方向偏空。`;
+      if (rsi >= 58) return `${{emaText}}；4小时RSI ${{rsi.toFixed(1)}}，多头占优。`;
+      if (rsi <= 42) return `${{emaText}}；4小时RSI ${{rsi.toFixed(1)}}，空头占优。`;
+      return `${{emaText}}；4小时RSI ${{Number.isFinite(rsi) ? rsi.toFixed(1) : '-'}}，大方向偏震荡。`;
+    }}
+    function strategyMomentumConclusion(macd1h, macd15m) {{
+      const h1 = Number(macd1h);
+      const m15 = Number(macd15m);
+      if (h1 > 0 && m15 > 0) return `短线偏多，回踩不破更适合找多。`;
+      if (h1 < 0 && m15 < 0) return `短线偏空，反弹不过更适合找空。`;
+      if (h1 < 0 && m15 > 0) return `15分钟在反弹，但1小时仍偏空；多单只适合轻仓试探。`;
+      if (h1 > 0 && m15 < 0) return `15分钟转弱，但1小时仍偏多；空单只适合短打。`;
+      return `短线动能不清晰，先等下一根短周期K线。`;
+    }}
+    function strategyVolumeConclusion(volumeRatio15m, volumeRatio1h, priceVsVwapPct) {{
+      const v15 = Number(volumeRatio15m);
+      const v1h = Number(volumeRatio1h);
+      const vs = Number(priceVsVwapPct);
+      if (v15 >= 1.35 && vs > 0) return `放量站上VWAP，短线买盘更主动。`;
+      if (v15 >= 1.35 && vs < 0) return `放量跌破VWAP，短线卖盘更主动。`;
+      if (v15 < 0.8 && v1h < 0.9) return `量能偏弱，当前突破或反弹可信度不足。`;
+      if (vs > 0) return `价格在VWAP上方，买盘略占优。`;
+      if (vs < 0) return `价格在VWAP下方，卖盘略占优。`;
+      return `量价中性，先看支撑阻力能否被有效突破。`;
+    }}
+    function strategyFundingConclusion(funding) {{
+      const f = Number(funding);
+      if (!Number.isFinite(f)) return `资金费率暂无有效值。`;
+      if (f >= 0.03) return `资金费率 ${{fmtPct(f)}}，多头明显拥挤。`;
+      if (f >= 0.01) return `资金费率 ${{fmtPct(f)}}，多头略拥挤。`;
+      if (f <= -0.03) return `资金费率 ${{fmtPct(f)}}，空头明显拥挤。`;
+      if (f <= -0.01) return `资金费率 ${{fmtPct(f)}}，空头略拥挤。`;
+      return `资金费率 ${{fmtPct(f)}}，资金情绪温和。`;
+    }}
     function updateLiveStrategyBasis(snapshot) {{
       const c15 = snapshot.c15 || [];
       const latest = Number(snapshot.latest || 0);
-      const support = liveSupport;
-      const resistance = liveResistance;
       const recent = c15.slice(-24);
       const volumeBase = c15.slice(-33, -1).reduce((a, c) => a + c.quoteVolume, 0) / Math.max(c15.slice(-33, -1).length, 1);
       const latestVolume = recent.length ? recent[recent.length - 1].quoteVolume : 0;
@@ -738,17 +776,11 @@ def render_report(
       const vwap = recent.reduce((acc, c) => acc + ((c.high + c.low + c.close) / 3) * c.quoteVolume, 0) / Math.max(recent.reduce((acc, c) => acc + c.quoteVolume, 0), 1);
       const priceVsVwap = vwap ? pct(latest, vwap) : strategyConfig.priceVsVwapPct;
       const funding = Number(snapshot.funding);
-      const side = positionConfig.activeSide;
-      const sideText = side === 'short' ? '当前是空单，优先判断持空、加空、止损和反手开多。' : side === 'long' ? '当前是多单，优先判断持多、加多、止损和反手开空。' : '当前无仓，重点等待开多或开空触发，不追中间价。';
       const cards = [
-        ['当前仓位', sideText],
-        ['大方向', `${{strategyConfig.emaState4h}}；4小时RSI ${{Number(strategyConfig.rsi4h).toFixed(1)}}。大周期决定只顺势做，逆势只当短线反弹处理。`],
-        ['短线动能', `1小时MACD柱 ${{Number(strategyConfig.macdHist1h).toFixed(1)}}，15分钟MACD柱 ${{Number(strategyConfig.macdHist15m).toFixed(1)}}；同向时才更适合执行开仓。`],
-        ['量价关系', `15分钟成交量约为均量 ${{Number(volumeRatio).toFixed(2)}} 倍；放量突破更可信，缩量反弹更适合观察是否受阻。`],
-        ['位置判断', `支撑 ${{fmtPrice(support)}}，阻力 ${{fmtPrice(resistance)}}，日内VWAP ${{fmtPrice(vwap)}}；当前相对VWAP ${{fmtPct(priceVsVwap)}}。`],
-        ['波动率', `15分钟ATR约 ${{fmtPrice(strategyConfig.atr15m)}} USDT；止损要放在策略失效点外，保证金随止损距离缩小。`],
-        ['资金情绪', `资金费率 ${{fmtPct(Number.isFinite(funding) ? funding : strategyConfig.fundingRatePct)}}；费率过热时不要追拥挤方向。`],
-        ['风险结论', `最终模式：${{strategyConfig.tradeMode}}。你固定使用100x，所以任何加仓都必须先有止损和本次最大保证金。`]
+        ['大方向', strategyTrendConclusion(strategyConfig.emaState4h, strategyConfig.rsi4h)],
+        ['短线动能', strategyMomentumConclusion(strategyConfig.macdHist1h, strategyConfig.macdHist15m)],
+        ['量价关系', strategyVolumeConclusion(volumeRatio, strategyConfig.volumeRatio1h, priceVsVwap)],
+        ['资金费率', strategyFundingConclusion(Number.isFinite(funding) ? funding : strategyConfig.fundingRatePct)]
       ];
       const host = document.getElementById('strategyCards');
       if (host) {{
@@ -1359,18 +1391,11 @@ def render_report(
       setText('strategyRiskScore', String(score.riskScore));
       setText('strategyTradeMode', score.tradeMode);
       setText('strategyReason', score.reason || '等待多周期指标确认');
-      const side = positionConfig.activeSide;
-      const support = metrics.support, resistance = metrics.resistance;
-      const opposite = (side === 'short' && score.longScore - score.shortScore >= 18) || (side === 'long' && score.shortScore - score.longScore >= 18);
       const cards = [
-        ['当前仓位', side === 'short' ? '当前是空单，锁定点位不随价格跳动；只更新距离止盈止损。' : side === 'long' ? '当前是多单，锁定点位不随价格跳动；只更新距离止盈止损。' : '当前无仓，开多/开空观察区会随实时支撑阻力刷新。'],
-        ['大方向', `${{metrics.ema4h.text}}；4小时RSI ${{metrics.rsi4h.toFixed(1)}}。大周期用于过滤逆势单。`],
-        ['短线动能', `1小时MACD柱 ${{metrics.macd1h.hist.toFixed(1)}}；15分钟MACD柱 ${{metrics.macd15m.hist.toFixed(1)}}；多周期同向时执行质量更高。`],
-        ['量价关系', `15分钟成交量 ${{metrics.volumeRatio15m.toFixed(2)}} 倍；1小时成交量 ${{metrics.volumeRatio1h.toFixed(2)}} 倍；放量突破比缩量反弹更可信。`],
-        ['位置判断', `支撑 ${{fmtPrice(support)}}，阻力 ${{fmtPrice(resistance)}}，VWAP ${{fmtPrice(metrics.vwap24h)}}，当前相对VWAP ${{fmtPct(metrics.priceVsVwapPct)}}。`],
-        ['波动率', `15分钟ATR约 ${{fmtPrice(metrics.atr15m)}} USDT；止损必须放在策略失效点外，保证金随止损距离缩小。`],
-        ['资金情绪', `资金费率 ${{fmtPct(Number.isFinite(metrics.funding) ? metrics.funding : 0)}}；费率过热时不要追拥挤方向。`],
-        ['风险结论', opposite ? '原计划失效风险升高：实时评分已明显转向持仓反方向，建议减仓或手动重新锁定计划。' : `最终模式：${{score.tradeMode}}。100x仓位优先执行锁定止损，不因价格跳动随意改点位。`],
+        ['大方向', strategyTrendConclusion(metrics.ema4h.text, metrics.rsi4h)],
+        ['短线动能', strategyMomentumConclusion(metrics.macd1h.hist, metrics.macd15m.hist)],
+        ['量价关系', strategyVolumeConclusion(metrics.volumeRatio15m, metrics.volumeRatio1h, metrics.priceVsVwapPct)],
+        ['资金费率', strategyFundingConclusion(Number.isFinite(metrics.funding) ? metrics.funding : 0)],
       ];
       const host = document.getElementById('strategyCards');
       if (host) host.innerHTML = cards.map(([title, body]) => `<div class="reason-card"><div class="reason-title">${{title}}</div><p>${{body}}</p></div>`).join('');
@@ -1600,6 +1625,17 @@ def render_report(
       const directional = (events || []).find(event => event.status === '已公布') || (events || [])[0];
       return directional ? directional.btcDirection : '宏观窗口暂不提供明确方向，优先看实时技术评分。';
     }}
+    function renderMacroEvent(event) {{
+      return `
+        <li>
+          <strong>${{fmtTime(new Date(event.scheduledAt))}} 北京时间 · ${{event.title}}</strong>
+          <br><span class="small">来源：${{event.source}} · 影响：${{event.impact}} · 状态：${{event.status}}</span>
+          <br><span class="small"><strong>预期：</strong>${{event.forecast || '-'}}</span>
+          <br><span class="small"><strong>前值：</strong>${{event.previous || '-'}}</span>
+          <br><span class="small"><strong>实际值：</strong>${{event.actual || '-'}}</span>
+          <br><span class="small"><strong>BTC方向：</strong>${{event.btcDirection}}</span>
+        </li>`;
+    }}
     async function refreshMacroEvents(reason = 'macro-5m-sync') {{
       if (!macroWorkerUrl) return;
       try {{
@@ -1608,22 +1644,17 @@ def render_report(
         const payload = await response.json();
         if (!payload.ok) throw new Error(payload.error || '宏观接口返回失败');
         const events = payload.events || [];
-        const realEvents = events.filter(event => !event.placeholder);
-        setText('macroSummary', `未来24小时识别到 ${{realEvents.length}} 个宏观事件；数据源：${{payload.source}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
-        setText('macroForecast', v5MacroDirectionSummary(realEvents.length ? realEvents : events));
-        setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布数据保留2小时`);
+        const upcoming = (payload.upcomingEvents || events).filter(event => !event.placeholder);
+        const recent = (payload.recentReleasedEvents || []).filter(event => !event.placeholder);
+        const warnings = payload.warnings || [];
+        setText('macroSummary', `未来24小时 ${{upcoming.length}} 个；最近7天已公布 ${{recent.length}} 个；数据源：${{payload.source}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
+        setText('macroForecast', v5MacroDirectionSummary(recent.length ? recent : upcoming.length ? upcoming : events));
+        setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布关键数据保留7天`);
+        setText('macroWarnings', warnings.length ? `数据源状态：${{warnings.join('；')}}` : '数据源状态：实时宏观源正常');
         const list = document.getElementById('macroEventsList');
-        if (list) {{
-          list.innerHTML = events.map(event => `
-            <li>
-              <strong>${{fmtTime(new Date(event.scheduledAt))}} 北京时间 · ${{event.title}}</strong>
-              <br><span class="small">来源：${{event.source}} · 影响：${{event.impact}} · 状态：${{event.status}}</span>
-              <br><span class="small"><strong>预期：</strong>${{event.forecast || '-'}}</span>
-              <br><span class="small"><strong>前值：</strong>${{event.previous || '-'}}</span>
-              <br><span class="small"><strong>实际值：</strong>${{event.actual || '-'}}</span>
-              <br><span class="small"><strong>BTC方向：</strong>${{event.btcDirection}}</span>
-            </li>`).join('');
-        }}
+        if (list) list.innerHTML = upcoming.length ? upcoming.map(renderMacroEvent).join('') : '<li>未来24小时暂无已接入的高影响宏观事件。</li>';
+        const recentList = document.getElementById('recentMacroEventsList');
+        if (recentList) recentList.innerHTML = recent.length ? recent.map(renderMacroEvent).join('') : '<li>最近7天暂无已接入的已公布关键数据。</li>';
       }} catch (error) {{
         setText('macroSummary', `宏观事件刷新失败：${{String(error).slice(0, 80)}}`);
       }}
