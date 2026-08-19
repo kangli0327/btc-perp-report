@@ -2,6 +2,7 @@ const OKX_BASE = "https://www.okx.com";
 const FALLBACK_CNY_RATE = 7.2;
 const TE_BASE = "https://api.tradingeconomics.com";
 const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+const FREE_MACRO_SOURCE = "official-free";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -282,10 +283,10 @@ async function macroBrief(request, env) {
       warnings.push(`Trading Economics 获取失败：${String(error).slice(0, 120)}`);
     }
   } else {
-    warnings.push("Trading Economics Key 未配置，精确一致预期/全量实际值源未启用");
+    warnings.push("当前使用免费官方源；精确一致预期和全量实际值覆盖有限");
   }
   const officialEvents = officialMacroEvents(now);
-  if (officialEvents.length) sources.push("official-macro-fallback");
+  if (officialEvents.length) sources.push(FREE_MACRO_SOURCE);
   const combined = dedupeMacroEvents([...events, ...officialEvents]);
   const upcomingEvents = combined.filter((event) => {
     const t = new Date(event.scheduledAt);
@@ -308,13 +309,13 @@ async function macroBrief(request, env) {
       previous: "",
       actual: "",
       status: "观察",
-      source: sources.length ? sources.join("+") : "fallback",
+      source: sources.length ? sources.join("+") : FREE_MACRO_SOURCE,
       btcDirection: "宏观窗口暂不提供明确方向，优先看实时技术评分。",
     }];
   }
   return jsonResponse({
     ok: true,
-    source: sources.length ? sources.join("+") : "fallback",
+    source: sources.length ? sources.join("+") : FREE_MACRO_SOURCE,
     updatedAt: now.toISOString(),
     windowStart: now.toISOString(),
     windowEnd: until.toISOString(),
@@ -325,6 +326,7 @@ async function macroBrief(request, env) {
     macroStatus: {
       tradingEconomicsConfigured: Boolean(env.TRADING_ECONOMICS_KEY),
       officialFallbackActive: true,
+      freeOfficialMode: !env.TRADING_ECONOMICS_KEY,
       recentKeepHours: RECENT_MACRO_KEEP_MS / (60 * 60 * 1000),
     },
   });

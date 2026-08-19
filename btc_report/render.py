@@ -1647,10 +1647,11 @@ def render_report(
         const upcoming = (payload.upcomingEvents || events).filter(event => !event.placeholder);
         const recent = (payload.recentReleasedEvents || []).filter(event => !event.placeholder);
         const warnings = payload.warnings || [];
-        setText('macroSummary', `未来24小时 ${{upcoming.length}} 个；最近7天已公布 ${{recent.length}} 个；数据源：${{payload.source}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
+        const macroMode = payload.macroStatus && payload.macroStatus.freeOfficialMode ? '免费官方源' : payload.source;
+        setText('macroSummary', `未来24小时 ${{upcoming.length}} 个；最近7天已公布 ${{recent.length}} 个；数据源：${{macroMode}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
         setText('macroForecast', v5MacroDirectionSummary(recent.length ? recent : upcoming.length ? upcoming : events));
         setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布关键数据保留7天`);
-        setText('macroWarnings', warnings.length ? `数据源状态：${{warnings.join('；')}}` : '数据源状态：实时宏观源正常');
+        setText('macroWarnings', warnings.length ? `数据源状态：${{warnings.join('；')}}` : `数据源状态：${{macroMode}}正常`);
         const list = document.getElementById('macroEventsList');
         if (list) list.innerHTML = upcoming.length ? upcoming.map(renderMacroEvent).join('') : '<li>未来24小时暂无已接入的高影响宏观事件。</li>';
         const recentList = document.getElementById('recentMacroEventsList');
