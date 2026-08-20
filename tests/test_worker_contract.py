@@ -24,6 +24,11 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("RECENT_MACRO_KEEP_MS", source)
         self.assertIn("美国7月CPI通胀数据", source)
         self.assertIn("macroStatus", source)
+        self.assertIn("function policyCryptoEvents", source)
+        self.assertIn("policyCryptoEvents", source)
+        self.assertIn("白宫加密会议推动CLARITY Act", source)
+        self.assertIn("Strategic Bitcoin Reserve", source)
+        self.assertIn("加密政策", source)
 
 
 if __name__ == "__main__":

@@ -288,8 +288,8 @@ def render_report(
         <div>
           <div class="sprint-status" id="sprintStatus">{html.escape(sprint_status)}</div>
           <p class="sprint-reason" id="sprintReason">{html.escape(sprint_reason)}</p>
-          <div class="progress" aria-label="冲刺目标进度"><span style="width:{target_progress:.2f}%"></span></div>
-          <div class="sprint-warning">目标：5000元 -> 300000元；当前进度按 1 USDT≈7.2元估算，不作为汇率承诺。</div>
+          <div class="progress" aria-label="冲刺目标进度"><span id="sprintProgressBar" style="width:{target_progress:.2f}%"></span></div>
+          <div class="sprint-warning" id="sprintStageBasis">目标：5000元 -> 300000元；当前进度按 1 USDT≈7.2元估算，不作为汇率承诺。</div>
         </div>
         <div>
           <div class="sprint-item">
@@ -299,7 +299,7 @@ def render_report(
         </div>
       </div>
       <div class="sprint-grid">
-        <div class="sprint-item stage"><div class="label">当前阶段</div><div class="value">{html.escape(str(sprint["name"]))}</div></div>
+        <div class="sprint-item stage"><div class="label">当前阶段</div><div class="value" id="sprintStageName">{html.escape(str(sprint["name"]))}</div></div>
         <div class="sprint-item"><div class="label">账户权益人民币</div><div class="value"><div class="equity-main" id="sprintEquityCny">¥{fmt_price(equity_cny)}</div><div class="equity-sub" id="sprintEquity">{fmt_price(position.account_equity_usdt)} USDT</div></div></div>
         <div class="sprint-item"><div class="label">一周收益 / 最大亏损</div><div class="value" id="sprintWeeklyRisk">¥{fmt_price(weekly_profit_cny)} / ¥{fmt_price(weekly_risk_cny)}</div></div>
         <div class="sprint-item"><div class="label">用户设定杠杆</div><div class="value" id="sprintLeverage">100x</div></div>
@@ -395,7 +395,7 @@ def render_report(
       <p class="small" id="macroWindow">窗口：{macro_brief.window_start:%Y-%m-%d %H:%M} - {macro_brief.window_end:%Y-%m-%d %H:%M} 北京时间</p>
       <p class="small" id="macroWarnings"></p>
       <ul id="macroEventsList">{macro_events_html}</ul>
-      <h3>最近已公布关键数据</h3>
+      <h3>最近7天关键消息</h3>
       <ul id="recentMacroEventsList"></ul>
     </section>
 
@@ -480,6 +480,26 @@ def render_report(
       }}
       updateSprintUi(latest, liqGap, state);
     }}
+    function sprintStageForCny(equityCny) {{
+      const equity = Number(equityCny || 0);
+      if (equity < 10000) return {{ name: '阶段1：5000 -> 10000元', min: 5000, max: 10000, weeklyPct: 0.40 }};
+      if (equity < 30000) return {{ name: '阶段2：10000 -> 30000元', min: 10000, max: 30000, weeklyPct: 0.30 }};
+      if (equity < 100000) return {{ name: '阶段3：30000 -> 100000元', min: 30000, max: 100000, weeklyPct: 0.20 }};
+      return {{ name: '阶段4：100000 -> 300000元', min: 100000, max: 300000, weeklyPct: 0.12 }};
+    }}
+    function applySprintStageFromEquity(equityCny, equityUsdt, rate, serverLimitCny) {{
+      const stage = sprintStageForCny(equityCny);
+      const displayLimit = Number.isFinite(Number(serverLimitCny)) && Number(serverLimitCny) > 0
+        ? Number(serverLimitCny)
+        : Number(equityCny || 0) * stage.weeklyPct;
+      const progress = Math.max(0, Math.min(100, Number(equityCny || 0) / 300000 * 100));
+      setText('sprintStageName', stage.name);
+      setText('sprintStageBasis', `目标：5000元 -> 300000元；当前按实时账户权益 ${{fmtCny(equityCny)}} 计算阶段。OKX接口权益 ${{fmtMoney2(equityUsdt)}} USDT × 汇率 ${{Number(rate || 0).toFixed(3)}} = 页面换算权益 ${{fmtCny(equityCny)}}。`);
+      const bar = document.getElementById('sprintProgressBar');
+      if (bar) bar.style.width = `${{progress.toFixed(2)}}%`;
+      positionConfig.sprintWeeklyRiskCny = displayLimit;
+      return {{ stage, weeklyLossLimitCny: displayLimit }};
+    }}
     function applyAccountSnapshot(account) {{
       if (!account || !account.ok) return;
       const syncedAt = account.okxFetchedAt || account.workerFetchedAt || account.updatedAt || new Date().toISOString();
@@ -489,6 +509,7 @@ def render_report(
       const weekLossCny = Number(account.weekLossCny || 0);
       const weekRiskCny = Number(account.weekRiskCny || positionConfig.sprintWeeklyRiskCny || 0);
       positionConfig.accountEquity = equityUsdt;
+      applySprintStageFromEquity(equityCny, equityUsdt, rate, weekRiskCny);
       setText('sprintEquityCny', fmtCny(equityCny));
       setText('sprintEquity', `${{fmtMoney2(equityUsdt)}} USDT · 汇率 ${{rate.toFixed(3)}}`);
       setText('sprintWeeklyRisk', `${{fmtCny(weekLossCny)}} / ${{fmtCny(weekRiskCny)}}`);
@@ -1578,9 +1599,10 @@ def render_report(
       const weeklyLossLimitCny = Number(account.weeklyLossLimitCny || account.weekRiskCny || positionConfig.sprintWeeklyRiskCny || 0);
       const weeklyStatus = account.weeklyRiskStatus || (weekProfitCny <= -weeklyLossLimitCny ? '本周禁止开新仓，只允许减仓/止损/平仓' : '本周风控正常');
       positionConfig.accountEquity = equityUsdt;
+      const sprintStageSync = applySprintStageFromEquity(equityCny, equityUsdt, rate, weeklyLossLimitCny);
       setText('sprintEquityCny', fmtCny(equityCny));
       setText('sprintEquity', `${{fmtMoney2(equityUsdt)}} USDT · 汇率 ${{rate.toFixed(3)}}`);
-      setText('sprintWeeklyRisk', `${{weekProfitCny >= 0 ? '+' : ''}}${{fmtCny(weekProfitCny)}} / 最大亏损 ${{fmtCny(weeklyLossLimitCny)}}`);
+      setText('sprintWeeklyRisk', `${{weekProfitCny >= 0 ? '+' : ''}}${{fmtCny(weekProfitCny)}} / 最大亏损 ${{fmtCny(sprintStageSync.weeklyLossLimitCny)}}`);
       setText('weeklyRiskStatus', weeklyStatus);
       const hedgeText = account.hasHedgedPositions ? ' · 检测到双向持仓，显示主仓位' : '';
       setText('accountRefreshState', `成功 · ${{fmtTime(new Date(syncedAt))}}${{hedgeText}}`);
@@ -1626,10 +1648,11 @@ def render_report(
       return directional ? directional.btcDirection : '宏观窗口暂不提供明确方向，优先看实时技术评分。';
     }}
     function renderMacroEvent(event) {{
+      const eventType = event.type || (String(event.category || '').toLowerCase().includes('crypto') ? '加密政策' : '经济数据');
       return `
         <li>
           <strong>${{fmtTime(new Date(event.scheduledAt))}} 北京时间 · ${{event.title}}</strong>
-          <br><span class="small">来源：${{event.source}} · 影响：${{event.impact}} · 状态：${{event.status}}</span>
+          <br><span class="small">类型：${{eventType}} · 来源：${{event.source}} · 影响：${{event.impact}} · 状态：${{event.status}}</span>
           <br><span class="small"><strong>预期：</strong>${{event.forecast || '-'}}</span>
           <br><span class="small"><strong>前值：</strong>${{event.previous || '-'}}</span>
           <br><span class="small"><strong>实际值：</strong>${{event.actual || '-'}}</span>
@@ -1648,14 +1671,14 @@ def render_report(
         const recent = (payload.recentReleasedEvents || []).filter(event => !event.placeholder);
         const warnings = payload.warnings || [];
         const macroMode = payload.macroStatus && payload.macroStatus.freeOfficialMode ? '免费官方源' : payload.source;
-        setText('macroSummary', `未来24小时 ${{upcoming.length}} 个；最近7天已公布 ${{recent.length}} 个；数据源：${{macroMode}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
+        setText('macroSummary', `未来24小时 ${{upcoming.length}} 个；最近7天关键消息 ${{recent.length}} 个；数据源：${{macroMode}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
         setText('macroForecast', v5MacroDirectionSummary(recent.length ? recent : upcoming.length ? upcoming : events));
         setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布关键数据保留7天`);
         setText('macroWarnings', warnings.length ? `数据源状态：${{warnings.join('；')}}` : `数据源状态：${{macroMode}}正常`);
         const list = document.getElementById('macroEventsList');
         if (list) list.innerHTML = upcoming.length ? upcoming.map(renderMacroEvent).join('') : '<li>未来24小时暂无已接入的高影响宏观事件。</li>';
         const recentList = document.getElementById('recentMacroEventsList');
-        if (recentList) recentList.innerHTML = recent.length ? recent.map(renderMacroEvent).join('') : '<li>最近7天暂无已接入的已公布关键数据。</li>';
+        if (recentList) recentList.innerHTML = recent.length ? recent.map(renderMacroEvent).join('') : '<li>最近7天暂无已接入的关键消息。</li>';
       }} catch (error) {{
         setText('macroSummary', `宏观事件刷新失败：${{String(error).slice(0, 80)}}`);
       }}

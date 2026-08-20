@@ -3,6 +3,15 @@ const FALLBACK_CNY_RATE = 7.2;
 const TE_BASE = "https://api.tradingeconomics.com";
 const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const FREE_MACRO_SOURCE = "official-free";
+const POLICY_CRYPTO_KEYWORDS = [
+  "White House",
+  "CFTC",
+  "CLARITY Act",
+  "Strategic Bitcoin Reserve",
+  "Digital Asset Stockpile",
+  "crypto regulation",
+  "Bitcoin reserve",
+];
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -216,6 +225,7 @@ function officialMacroEvents(now) {
       title: "美国7月CPI通胀数据",
       country: "US",
       category: "Inflation",
+      type: "经济数据",
       scheduledAt: "2026-08-12T12:30:00.000Z",
       impact: "高",
       forecast: "精确一致预期未接入；市场大致预期温和降温",
@@ -229,6 +239,7 @@ function officialMacroEvents(now) {
       title: "美国8月CPI通胀数据",
       country: "US",
       category: "Inflation",
+      type: "经济数据",
       scheduledAt: "2026-09-11T12:30:00.000Z",
       impact: "高",
       forecast: "待公布前更新一致预期",
@@ -237,6 +248,36 @@ function officialMacroEvents(now) {
       status: "待公布",
       source: "BLS官方CPI日程",
       btcDirection: "待公布：若通胀继续降温偏利多BTC；若重新升温偏利空BTC。",
+    },
+  ].filter((event) => {
+    const t = new Date(event.scheduledAt);
+    const until = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const recentFrom = new Date(now.getTime() - RECENT_MACRO_KEEP_MS);
+    return (t >= now && t <= until) || (event.status === "已公布" && t >= recentFrom && t <= now);
+  });
+}
+
+function policyCryptoEvents(now) {
+  return [
+    {
+      title: "白宫加密会议推动CLARITY Act与美国比特币储备叙事",
+      country: "US",
+      category: "Crypto Policy",
+      type: "加密政策",
+      scheduledAt: "2026-08-19T16:00:00.000Z",
+      impact: "高",
+      forecast: "政策预期：美国继续推动加密市场监管清晰化，并维持比特币储备叙事热度",
+      previous: "此前已建立Strategic Bitcoin Reserve与United States Digital Asset Stockpile政策框架",
+      actual: "特朗普在白宫加密活动中推动国会推进CLARITY Act，并强化美国潜在比特币积累与数字资产储备讨论",
+      status: "已公布",
+      source: "CoinDesk / CFTC / White House",
+      sourceUrls: [
+        "https://www.coindesk.com/policy/2026/08/19/trump-pushes-congress-to-move-on-clarity-act-during-white-house-crypto-event",
+        "https://www.cftc.gov/PressRoom/SpeechesTestimony/opaselig9",
+        "https://www.whitehouse.gov/presidential-actions/2025/03/establishment-of-the-strategic-bitcoin-reserve-and-united-states-digital-asset-stockpile/",
+      ],
+      keywords: POLICY_CRYPTO_KEYWORDS,
+      btcDirection: "先利多后防回落：政策面强化美国比特币储备和监管清晰化叙事，利好中期风险偏好；短线若价格已提前反应，需要防兑现回落。",
     },
   ].filter((event) => {
     const t = new Date(event.scheduledAt);
@@ -286,8 +327,9 @@ async function macroBrief(request, env) {
     warnings.push("当前使用免费官方源；精确一致预期和全量实际值覆盖有限");
   }
   const officialEvents = officialMacroEvents(now);
-  if (officialEvents.length) sources.push(FREE_MACRO_SOURCE);
-  const combined = dedupeMacroEvents([...events, ...officialEvents]);
+  const cryptoPolicyEvents = policyCryptoEvents(now);
+  if (officialEvents.length || cryptoPolicyEvents.length) sources.push(FREE_MACRO_SOURCE);
+  const combined = dedupeMacroEvents([...events, ...officialEvents, ...cryptoPolicyEvents]);
   const upcomingEvents = combined.filter((event) => {
     const t = new Date(event.scheduledAt);
     return !event.placeholder && t >= now && t <= until;
@@ -322,12 +364,14 @@ async function macroBrief(request, env) {
     events: visibleEvents,
     upcomingEvents,
     recentReleasedEvents,
+    policyCryptoEvents: cryptoPolicyEvents,
     warnings,
     macroStatus: {
       tradingEconomicsConfigured: Boolean(env.TRADING_ECONOMICS_KEY),
       officialFallbackActive: true,
       freeOfficialMode: !env.TRADING_ECONOMICS_KEY,
       recentKeepHours: RECENT_MACRO_KEEP_MS / (60 * 60 * 1000),
+      policyCryptoKeywords: POLICY_CRYPTO_KEYWORDS,
     },
   });
 }
