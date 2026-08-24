@@ -1,4 +1,5 @@
 const OKX_BASE = "https://www.okx.com";
+const BYBIT_BASE = "https://api.bybit.com";
 const BINANCE_FAPI_BASE = "https://fapi.binance.com";
 const FALLBACK_CNY_RATE = 7.2;
 const TE_BASE = "https://api.tradingeconomics.com";
@@ -181,9 +182,34 @@ function binanceCandle(row) {
   };
 }
 
+function bybitCandle(row) {
+  return {
+    ts: Number(row[0]),
+    open: Number(row[1]),
+    high: Number(row[2]),
+    low: Number(row[3]),
+    close: Number(row[4]),
+    volume: Number(row[5]),
+    quoteVolume: Number(row[6] || 0),
+  };
+}
+
+async function bybitPublic(path, cacheTtl = 10) {
+  const response = await fetch(`${BYBIT_BASE}${path}`, { cf: { cacheTtl } });
+  const payload = await response.json();
+  if (!response.ok || payload.retCode !== 0) throw new Error(`Bybit public ${path} failed: ${payload.retMsg || response.status}`);
+  return payload.result || {};
+}
+
 async function binancePublic(path, cacheTtl = 10) {
   const response = await fetch(`${BINANCE_FAPI_BASE}${path}`, { cf: { cacheTtl } });
-  const payload = await response.json();
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error(`Binance public ${path} returned non-JSON`);
+  }
   if (!response.ok) throw new Error(`Binance public ${path} failed: ${payload.msg || response.status}`);
   return payload;
 }
@@ -354,12 +380,36 @@ async function binanceSimMarketSnapshot() {
   return buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, "Binance USD-M备用行情");
 }
 
+async function bybitSimMarketSnapshot() {
+  const [ticker, c15Data, c1hData, c4hData, c5Data, rateInfo] = await Promise.all([
+    bybitPublic("/v5/market/tickers?category=linear&symbol=BTCUSDT", 2),
+    bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=15&limit=160", 10),
+    bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=160", 30),
+    bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=240&limit=160", 60),
+    bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=5&limit=80", 10),
+    cnyRate(),
+  ]);
+  const c15 = (c15Data.list || []).map(bybitCandle).reverse();
+  const c1h = (c1hData.list || []).map(bybitCandle).reverse();
+  const c4h = (c4hData.list || []).map(bybitCandle).reverse();
+  const c5m = (c5Data.list || []).map(bybitCandle).reverse();
+  const item = (ticker.list || [])[0] || {};
+  const latest = Number(item.markPrice || item.lastPrice || c15[c15.length - 1]?.close || 0);
+  const funding = Number(item.fundingRate || 0) * 100;
+  return buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, "Bybit线性合约备用行情");
+}
+
 async function simMarketSnapshot() {
   try {
     return await okxSimMarketSnapshot();
-  } catch (error) {
-    const fallback = await binanceSimMarketSnapshot();
-    return { ...fallback, sourceWarning: `OKX公共行情失败，已切换Binance备用：${String(error).slice(0, 100)}` };
+  } catch (okxError) {
+    try {
+      const fallback = await bybitSimMarketSnapshot();
+      return { ...fallback, sourceWarning: `OKX公共行情失败，已切换Bybit备用：${String(okxError).slice(0, 100)}` };
+    } catch (bybitError) {
+      const fallback = await binanceSimMarketSnapshot();
+      return { ...fallback, sourceWarning: `OKX/Bybit公共行情失败，已切换Binance备用：${String(bybitError).slice(0, 100)}` };
+    }
   }
 }
 
