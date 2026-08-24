@@ -148,6 +148,14 @@ async function okxPublic(path, cacheTtl = 5) {
   return payload.data || [];
 }
 
+async function okxPublicOptional(path, fallback = [], cacheTtl = 30) {
+  try {
+    return await okxPublic(path, cacheTtl);
+  } catch {
+    return fallback;
+  }
+}
+
 function okxCandle(row) {
   return {
     ts: Number(row[0]),
@@ -263,7 +271,7 @@ async function simMarketSnapshot() {
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=160", 30),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=160", 60),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=80", 10),
-    okxPublic("/api/v5/public/funding-rate?instId=BTC-USDT-SWAP", 30),
+    okxPublicOptional("/api/v5/public/funding-rate?instId=BTC-USDT-SWAP", [{ fundingRate: 0 }], 120),
     cnyRate(),
   ]);
   const c15 = c15Rows.map(okxCandle).reverse();
