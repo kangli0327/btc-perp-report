@@ -270,8 +270,20 @@ def render_report(
     .reason-card {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; }}
     .reason-title {{ font-weight:780; margin-bottom:6px; color:#102a43; }}
     .reason-card p {{ margin:0; color:#344054; }}
+    .sim-panel {{ border-left:4px solid #0f766e; }}
+    .sim-actions {{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 12px; }}
+    .sim-actions button {{ min-height:36px; border:1px solid #98a2b3; border-radius:8px; background:#fff; color:#17202a; font-weight:760; padding:6px 12px; }}
+    .sim-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:10px; }}
+    .sim-card {{ background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:10px; }}
+    .sim-card .value {{ font-size:19px; }}
+    .sim-records {{ overflow-x:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; }}
+    .sim-records table {{ width:100%; min-width:820px; border-collapse:collapse; background:#fff; }}
+    .sim-records th,.sim-records td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; font-size:13px; vertical-align:top; }}
+    .sim-records th {{ color:#475467; background:#f8fafc; white-space:nowrap; }}
+    .sim-profit {{ color:var(--good); font-weight:760; }}
+    .sim-loss {{ color:var(--danger); font-weight:760; }}
     footer {{ padding:18px 14px 30px; color:var(--muted); text-align:center; font-size:13px; }}
-    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .reason-grid {{ grid-template-columns:1fr; }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
+    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .reason-grid {{ grid-template-columns:1fr; }} .sim-grid {{ grid-template-columns:repeat(2,1fr); }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
     @media (max-width:430px) {{ .contract-title {{ font-size:23px; }} .position-head {{ grid-template-columns:1fr; }} .pnl-box {{ text-align:left; }} .position-grid {{ grid-template-columns:repeat(2,1fr); }} }}
   </style>
 </head>
@@ -403,6 +415,33 @@ def render_report(
       <h2>运行状态</h2>
       <ul id="liveStatus">{warning_html}</ul>
       <p class="small">本网页仅作投资决策辅助，不自动交易，不构成收益承诺。</p>
+    </section>
+
+    <section class="sim-panel">
+      <h2>AI模拟盘：5万元BTC合约测试</h2>
+      <p class="small">模拟盘不连接真实账户，不代表真实收益；用于观察 AI 策略在 BTCUSDT 永续上的操盘表现。</p>
+      <div class="sim-actions">
+        <button id="refreshSimButton" type="button">刷新模拟盘</button>
+        <button id="resetSimButton" type="button">重置模拟盘</button>
+      </div>
+      <div class="sim-grid">
+        <div class="sim-card"><div class="label">模拟余额</div><div class="value" id="simBalance">等待刷新</div></div>
+        <div class="sim-card"><div class="label">模拟权益</div><div class="value" id="simEquity">等待刷新</div></div>
+        <div class="sim-card"><div class="label">浮盈浮亏</div><div class="value" id="simFloatingPnl">等待刷新</div></div>
+        <div class="sim-card"><div class="label">胜率 / 交易数</div><div class="value" id="simWinRate">等待刷新</div></div>
+        <div class="sim-card"><div class="label">当前持仓</div><div class="value" id="simPositionSide">等待刷新</div></div>
+        <div class="sim-card"><div class="label">持仓数量</div><div class="value" id="simPositionQty">等待刷新</div></div>
+        <div class="sim-card"><div class="label">开仓 / 标记</div><div class="value" id="simEntryMark">等待刷新</div></div>
+        <div class="sim-card"><div class="label">止盈 / 止损</div><div class="value" id="simTpSl">等待刷新</div></div>
+      </div>
+      <p class="small" id="simDecision">等待模拟盘刷新。</p>
+      <p class="small" id="simStatus">状态：未连接</p>
+      <div class="sim-records">
+        <table>
+          <thead><tr><th>时间</th><th>动作</th><th>方向</th><th>价格</th><th>数量BTC</th><th>保证金</th><th>手续费</th><th>盈亏</th><th>余额</th><th>理由</th></tr></thead>
+          <tbody id="simRecords"><tr><td colspan="10">等待模拟盘记录。</td></tr></tbody>
+        </table>
+      </div>
     </section>
   </main>
   <footer>Generated by GitHub Actions · BTC-USDT Perpetual Futures Report</footer>
@@ -1118,10 +1157,13 @@ def render_report(
     // V5 realtime risk, strategy scoring, lifecycle-locked position plan, and macro refresh.
     const macroWorkerBaseUrl = accountWorkerUrl && accountWorkerUrl.endsWith('/') ? accountWorkerUrl.slice(0, -1) : accountWorkerUrl;
     const macroWorkerUrl = macroWorkerBaseUrl ? `${{macroWorkerBaseUrl}}/macro` : '';
+    const simWorkerUrl = macroWorkerBaseUrl ? `${{macroWorkerBaseUrl}}/sim` : '';
+    const simResetUrl = macroWorkerBaseUrl ? `${{macroWorkerBaseUrl}}/sim/reset` : '';
     let latestStrategySnapshot = null;
     let liveEarlyCandles1m = [];
     let liveEarlyCandles5m = [];
     let latestEarlyWarning = {{ longWarningScore: 0, shortWarningScore: 0, warningMode: '等待1m/5m数据', warningReason: '' }};
+    let latestSimState = null;
 
     function v5Clamp(value, min, max) {{ return Math.max(min, Math.min(max, value)); }}
     function v5Closes(candles) {{ return (candles || []).map(c => Number(c.close || 0)).filter(v => Number.isFinite(v) && v > 0); }}
@@ -1568,6 +1610,7 @@ def render_report(
         : `计划锁定时间 ${{plan.createdAt || '-'}} · 锁定依据：开仓均价 ${{fmtPrice(entry)}} / 支撑快照 ${{fmtPrice(plan.supportSnapshot)}} / 阻力快照 ${{fmtPrice(plan.resistanceSnapshot)}} / ATR ${{fmtPrice(plan.atrSnapshot)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 行情源：${{source}}`;
       setText('simplePlanContext', context);
       setText('liveHeaderMeta', `本次刷新：${{fmtTime(new Date())}} 北京时间 · 标的：BTCUSDT · 数据源：${{source}}`);
+      updateSimFloatingFromLive(latest);
       updatePositionUi(latest);
     }}
     function v5InstallRelockButton() {{
@@ -1659,6 +1702,87 @@ def render_report(
           <br><span class="small"><strong>BTC方向：</strong>${{event.btcDirection}}</span>
         </li>`;
     }}
+    function simSideText(side) {{
+      if (side === 'long') return '持多';
+      if (side === 'short') return '持空';
+      return '空仓';
+    }}
+    function simPnlClass(value) {{
+      return Number(value || 0) < 0 ? 'sim-loss' : Number(value || 0) > 0 ? 'sim-profit' : '';
+    }}
+    function updateSimFloatingFromLive(latest) {{
+      if (!latestSimState || !latestSimState.position || !Number.isFinite(Number(latest))) return;
+      const p = latestSimState.position;
+      const rate = Number(latestSimState.market?.cnyRate || positionConfig.fallbackCnyRate || 7.2);
+      const rawUsdt = p.side === 'long' ? (latest - p.entryPrice) * p.quantityBtc : (p.entryPrice - latest) * p.quantityBtc;
+      const pnlCny = rawUsdt * rate;
+      const equity = Number(latestSimState.balanceCny || 0) + pnlCny;
+      setText('simFloatingPnl', `${{pnlCny >= 0 ? '+' : ''}}${{fmtCny(pnlCny)}}`);
+      setText('simEquity', fmtCny(equity));
+      setText('simEntryMark', `${{fmtPrice(p.entryPrice)}} / ${{fmtPrice(latest)}}`);
+      const pnlEl = document.getElementById('simFloatingPnl');
+      if (pnlEl) {{ pnlEl.className = `value ${{simPnlClass(pnlCny)}}`; }}
+    }}
+    function renderSimState(payload) {{
+      latestSimState = payload;
+      const p = payload.position || null;
+      setText('simBalance', fmtCny(Number(payload.balanceCny || 0)));
+      setText('simEquity', fmtCny(Number(payload.equityCny || 0)));
+      setText('simFloatingPnl', `${{Number(payload.floatingPnlCny || 0) >= 0 ? '+' : ''}}${{fmtCny(Number(payload.floatingPnlCny || 0))}}`);
+      setText('simWinRate', `${{fmtPct(Number(payload.winRate || 0))}} / ${{Number(payload.totalTrades || 0)}}笔`);
+      setText('simPositionSide', p ? `${{simSideText(p.side)}} · ${{p.leverage || 100}}x` : '空仓');
+      setText('simPositionQty', p ? Number(p.quantityBtc || 0).toFixed(4) : '0');
+      setText('simEntryMark', p ? `${{fmtPrice(Number(p.entryPrice || 0))}} / ${{fmtPrice(Number(payload.market?.latest || 0))}}` : `- / ${{fmtPrice(Number(payload.market?.latest || 0))}}`);
+      setText('simTpSl', p ? `${{fmtPrice(Number(p.takeProfit || 0))}} / ${{fmtPrice(Number(p.stopLoss || 0))}}` : '- / -');
+      setText('simDecision', `本次决策：${{payload.decision || '等待'}} · ${{payload.decisionReason || '-'}}`);
+      setText('simStatus', `状态：成功 · ${{fmtTime(new Date(payload.updatedAt || Date.now()))}} · 回撤 ${{fmtPct(Number(payload.drawdownPct || 0))}} · 汇率 ${{Number(payload.market?.cnyRate || 0).toFixed(3)}}`);
+      const pnlEl = document.getElementById('simFloatingPnl');
+      if (pnlEl) pnlEl.className = `value ${{simPnlClass(payload.floatingPnlCny)}}`;
+      const body = document.getElementById('simRecords');
+      if (body) {{
+        const rows = (payload.records || []).slice(0, 20);
+        body.innerHTML = rows.length ? rows.map(record => `
+          <tr>
+            <td>${{record.time || '-'}}</td>
+            <td>${{record.action || '-'}}</td>
+            <td>${{simSideText(record.side)}}</td>
+            <td>${{record.price ? fmtPrice(Number(record.price)) : '-'}}</td>
+            <td>${{record.quantityBtc ? Number(record.quantityBtc).toFixed(4) : '-'}}</td>
+            <td>${{fmtCny(Number(record.marginCny || 0))}}</td>
+            <td>${{fmtCny(Number(record.feeCny || 0))}}</td>
+            <td class="${{simPnlClass(record.pnlCny)}}">${{Number(record.pnlCny || 0) >= 0 ? '+' : ''}}${{fmtCny(Number(record.pnlCny || 0))}}</td>
+            <td>${{fmtCny(Number(record.balanceCny || 0))}}</td>
+            <td>${{record.reason || '-'}}</td>
+          </tr>`).join('') : '<tr><td colspan="10">暂无模拟盘记录。</td></tr>';
+      }}
+    }}
+    async function refreshSim(reason = 'sim-refresh') {{
+      if (!simWorkerUrl) {{
+        setText('simStatus', '状态：模拟盘接口未配置');
+        return;
+      }}
+      try {{
+        setText('simStatus', `状态：刷新中 · ${{fmtTime(new Date())}}`);
+        const response = await fetch(withCacheBust(simWorkerUrl), {{ cache: 'no-store' }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.error || '模拟盘接口返回失败');
+        renderSimState(payload);
+      }} catch (error) {{
+        setText('simStatus', `状态：刷新失败 · ${{String(error).slice(0, 80)}}`);
+      }}
+    }}
+    async function resetSim() {{
+      if (!simResetUrl) return;
+      try {{
+        setText('simStatus', `状态：重置中 · ${{fmtTime(new Date())}}`);
+        const response = await fetch(withCacheBust(simResetUrl), {{ method: 'POST', cache: 'no-store' }});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        await refreshSim('sim-reset');
+      }} catch (error) {{
+        setText('simStatus', `状态：重置失败 · ${{String(error).slice(0, 80)}}`);
+      }}
+    }}
     async function refreshMacroEvents(reason = 'macro-5m-sync') {{
       if (!macroWorkerUrl) return;
       try {{
@@ -1694,11 +1818,19 @@ def render_report(
       if (document.visibilityState !== 'hidden' && websocketHasLivePrice) refreshLiveMarket('REST-15s-score-sync');
     }}, 15000);
     refreshMacroEvents('page-load');
+    refreshSim('page-load');
     setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshMacroEvents('macro-5m-sync'); }}, 300000);
     setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshMacroEvents('macro-high-impact-30s-sync'); }}, 30000);
+    setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshSim('sim-30s-sync'); }}, 30000);
+    const refreshSimButton = document.getElementById('refreshSimButton');
+    if (refreshSimButton) refreshSimButton.addEventListener('click', () => refreshSim('manual-refresh'));
+    const resetSimButton = document.getElementById('resetSimButton');
+    if (resetSimButton) resetSimButton.addEventListener('click', () => {{
+      if (window.confirm('确认重置AI模拟盘？这只会清空模拟数据，不影响真实OKX账户。')) resetSim();
+    }});
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshLiveMarket('page-visible'); }});
     document.addEventListener('visibilitychange', () => {{ if (document.visibilityState === 'visible') refreshAccount('page-visible'); }});
-    window.addEventListener('focus', () => {{ refreshLiveMarket('window-focus'); refreshAccount('window-focus'); }});
+    window.addEventListener('focus', () => {{ refreshLiveMarket('window-focus'); refreshAccount('window-focus'); refreshSim('window-focus'); }});
     setInterval(() => {{ if (document.visibilityState !== 'hidden') refreshAccount('account-15s-sync'); }}, 15000);
   </script>
 </body>

@@ -3,6 +3,14 @@ const FALLBACK_CNY_RATE = 7.2;
 const TE_BASE = "https://api.tradingeconomics.com";
 const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const FREE_MACRO_SOURCE = "official-free";
+const SIM_KV_KEY = "SIM_ACCOUNT_STATE_V1";
+const SIM_INITIAL_CNY = 50000;
+const SIM_LEVERAGE = 100;
+const SIM_FEE_RATE = 0.0005;
+const SIM_MAX_MARGIN_PCT = 0.12;
+const SIM_MAX_LOSS_PCT = 0.03;
+const SIM_COOLDOWN_MS = 15 * 60 * 1000;
+const SIM_PAUSE_AFTER_LOSSES_MS = 2 * 60 * 60 * 1000;
 const POLICY_CRYPTO_KEYWORDS = [
   "White House",
   "CFTC",
@@ -15,7 +23,7 @@ const POLICY_CRYPTO_KEYWORDS = [
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,OPTIONS",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -133,6 +141,169 @@ function selectActivePosition(parsedPositions) {
     .sort((a, b) => (b.marginUsdt || b.notionalUsdt || 0) - (a.marginUsdt || a.notionalUsdt || 0))[0];
 }
 
+async function okxPublic(path, cacheTtl = 5) {
+  const response = await fetch(`${OKX_BASE}${path}`, { cf: { cacheTtl } });
+  const payload = await response.json();
+  if (!response.ok || payload.code !== "0") throw new Error(`OKX public ${path} failed: ${payload.msg || response.status}`);
+  return payload.data || [];
+}
+
+function okxCandle(row) {
+  return {
+    ts: Number(row[0]),
+    open: Number(row[1]),
+    high: Number(row[2]),
+    low: Number(row[3]),
+    close: Number(row[4]),
+    volume: Number(row[5]),
+    quoteVolume: Number(row[7] || row[6] || 0),
+  };
+}
+
+function closes(candles) {
+  return (candles || []).map((item) => Number(item.close || 0)).filter((value) => Number.isFinite(value) && value > 0);
+}
+
+function emaSeries(values, length) {
+  if (!values.length) return [];
+  const alpha = 2 / (length + 1);
+  const result = [values[0]];
+  for (let i = 1; i < values.length; i += 1) result.push(values[i] * alpha + result[result.length - 1] * (1 - alpha));
+  return result;
+}
+
+function ema(values, length) {
+  const series = emaSeries(values, length);
+  return series.length ? series[series.length - 1] : 0;
+}
+
+function rsi(values, length = 14) {
+  if (values.length <= length) return 50;
+  let gain = 0;
+  let loss = 0;
+  const slice = values.slice(-length - 1);
+  for (let i = 1; i < slice.length; i += 1) {
+    const diff = slice[i] - slice[i - 1];
+    if (diff >= 0) gain += diff;
+    else loss += Math.abs(diff);
+  }
+  const avgGain = gain / length;
+  const avgLoss = loss / length;
+  if (!avgLoss) return avgGain ? 100 : 50;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
+function macd(values) {
+  if (values.length < 35) return { hist: 0 };
+  const fast = emaSeries(values, 12);
+  const slow = emaSeries(values, 26);
+  const line = fast.map((value, index) => value - slow[index]);
+  const signal = emaSeries(line, 9);
+  return { hist: (line[line.length - 1] || 0) - (signal[signal.length - 1] || 0) };
+}
+
+function atr(candles, length = 14) {
+  if (!candles || candles.length < 2) return 0;
+  const slice = candles.slice(-length - 1);
+  const ranges = [];
+  for (let i = 1; i < slice.length; i += 1) {
+    const current = slice[i];
+    const prev = slice[i - 1];
+    ranges.push(Math.max(current.high - current.low, Math.abs(current.high - prev.close), Math.abs(current.low - prev.close)));
+  }
+  return ranges.length ? ranges.reduce((a, b) => a + b, 0) / ranges.length : 0;
+}
+
+function volumeRatio(candles, length = 20) {
+  if (!candles || candles.length < 2) return 1;
+  const previous = candles.slice(0, -1).slice(-length);
+  const base = previous.reduce((sum, item) => sum + Number(item.quoteVolume || item.volume || 0), 0) / Math.max(previous.length, 1);
+  return base ? Number(candles[candles.length - 1].quoteVolume || candles[candles.length - 1].volume || 0) / base : 1;
+}
+
+function vwap(candles) {
+  let numerator = 0;
+  let denominator = 0;
+  (candles || []).forEach((item) => {
+    const volume = Number(item.quoteVolume || item.volume || 0);
+    const typical = (item.high + item.low + item.close) / 3;
+    numerator += typical * volume;
+    denominator += volume;
+  });
+  return denominator ? numerator / denominator : 0;
+}
+
+function emaState(candles) {
+  const values = closes(candles);
+  const latest = values[values.length - 1] || 0;
+  const e20 = ema(values, 20);
+  const e60 = ema(values, 60);
+  const e120 = ema(values, 120);
+  if (latest > e20 && e20 > e60 && e60 > e120) return "EMA多头排列";
+  if (latest < e20 && e20 < e60 && e60 < e120) return "EMA空头排列";
+  if (latest > e20 && e20 > e60) return "EMA偏多";
+  if (latest < e20 && e20 < e60) return "EMA偏空";
+  return "EMA震荡";
+}
+
+function higherLows(candles, count = 3) {
+  const slice = (candles || []).slice(-count);
+  return slice.length >= count && slice.every((item, index) => index === 0 || item.low > slice[index - 1].low);
+}
+
+function lowerHighs(candles, count = 3) {
+  const slice = (candles || []).slice(-count);
+  return slice.length >= count && slice.every((item, index) => index === 0 || item.high < slice[index - 1].high);
+}
+
+async function simMarketSnapshot() {
+  const [markData, c15Rows, c1hRows, c4hRows, c5Rows, fundingRows, rateInfo] = await Promise.all([
+    okxPublic("/api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP", 2),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=160", 10),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=160", 30),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=160", 60),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=80", 10),
+    okxPublic("/api/v5/public/funding-rate?instId=BTC-USDT-SWAP", 30),
+    cnyRate(),
+  ]);
+  const c15 = c15Rows.map(okxCandle).reverse();
+  const c1h = c1hRows.map(okxCandle).reverse();
+  const c4h = c4hRows.map(okxCandle).reverse();
+  const c5m = c5Rows.map(okxCandle).reverse();
+  const latest = Number(markData[0]?.markPx || c15[c15.length - 1]?.close || 0);
+  const closes15 = closes(c15);
+  const closes1h = closes(c1h);
+  const closes4h = closes(c4h);
+  const recent24h = c15.slice(-96);
+  const supportWindow = c15.slice(-24);
+  const support = supportWindow.length ? Math.min(...supportWindow.map((item) => item.low || latest)) : latest * 0.995;
+  const resistance = supportWindow.length ? Math.max(...supportWindow.map((item) => item.high || latest)) : latest * 1.005;
+  const vwap24h = vwap(recent24h);
+  const atr15m = atr(c15);
+  const funding = Number(fundingRows[0]?.fundingRate || 0) * 100;
+  const metrics = {
+    latest,
+    support,
+    resistance,
+    rsi15m: rsi(closes15),
+    rsi1h: rsi(closes1h),
+    rsi4h: rsi(closes4h),
+    macd15m: macd(closes15),
+    macd1h: macd(closes1h),
+    macd4h: macd(closes4h),
+    ema4h: emaState(c4h),
+    volumeRatio15m: volumeRatio(c15),
+    volumeRatio1h: volumeRatio(c1h),
+    atr15m,
+    vwap24h,
+    priceVsVwapPct: vwap24h ? (latest / vwap24h - 1) * 100 : 0,
+    funding,
+    higherLows5m: higherLows(c5m),
+    lowerHighs5m: lowerHighs(c5m),
+  };
+  return { metrics, rateInfo, updatedAt: new Date().toISOString() };
+}
+
 async function weeklyPerformance(env, equityCny) {
   const key = `week-start:${beijingWeekKey()}`;
   const fallbackLimit = equityCny * weeklyRiskPct(equityCny);
@@ -164,6 +335,337 @@ async function weeklyPerformance(env, equityCny) {
     weeklyRiskStatus: hitLimit ? "本周禁止开新仓，只允许减仓/止损/平仓" : "本周风控正常",
     weeklyStatus: "week baseline synced",
   };
+}
+
+function beijingTimeText(value = new Date()) {
+  return new Date(value).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour12: false,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function emptySimState(now = new Date()) {
+  return {
+    version: 1,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    balanceCny: SIM_INITIAL_CNY,
+    initialCny: SIM_INITIAL_CNY,
+    maxEquityCny: SIM_INITIAL_CNY,
+    position: null,
+    records: [],
+    totalTrades: 0,
+    winTrades: 0,
+    lossStreak: 0,
+    pauseUntil: null,
+    lastDecisionAt: null,
+    lastOpenSide: null,
+  };
+}
+
+async function readSimState(env) {
+  if (!env.ACCOUNT_KV) return emptySimState();
+  const raw = await env.ACCOUNT_KV.get(SIM_KV_KEY);
+  if (!raw) return emptySimState();
+  try {
+    return { ...emptySimState(), ...JSON.parse(raw) };
+  } catch {
+    return emptySimState();
+  }
+}
+
+async function writeSimState(env, state) {
+  if (!env.ACCOUNT_KV) return;
+  await env.ACCOUNT_KV.put(SIM_KV_KEY, JSON.stringify(state));
+}
+
+function simPnlCny(position, latest, rate) {
+  if (!position) return 0;
+  const rawUsdt = position.side === "long"
+    ? (latest - position.entryPrice) * position.quantityBtc
+    : (position.entryPrice - latest) * position.quantityBtc;
+  return rawUsdt * rate;
+}
+
+function pushSimRecord(state, record) {
+  const now = new Date();
+  state.records = [
+    {
+      id: `${now.getTime()}-${Math.random().toString(16).slice(2, 8)}`,
+      createdAt: now.toISOString(),
+      time: beijingTimeText(now),
+      ...record,
+    },
+    ...(state.records || []),
+  ].slice(0, 100);
+}
+
+function simScores(metrics) {
+  let longScore = 35;
+  let shortScore = 35;
+  let riskScore = 20;
+  if (metrics.rsi4h > 55) longScore += 14;
+  else if (metrics.rsi4h < 45) shortScore += 14;
+  if (metrics.macd1h.hist > 0) longScore += 16;
+  else if (metrics.macd1h.hist < 0) shortScore += 16;
+  if (metrics.macd15m.hist > 0 && metrics.volumeRatio15m > 1.15) longScore += 10;
+  if (metrics.macd15m.hist < 0 && metrics.volumeRatio15m > 1.15) shortScore += 10;
+  if (["EMA多头排列", "EMA偏多"].includes(metrics.ema4h)) longScore += 12;
+  if (["EMA空头排列", "EMA偏空"].includes(metrics.ema4h)) shortScore += 12;
+  if (metrics.priceVsVwapPct > 0.2) longScore += 7;
+  if (metrics.priceVsVwapPct < -0.2) shortScore += 7;
+  if (metrics.funding > 0.02 && metrics.macd1h.hist < 0) shortScore += 7;
+  if (metrics.funding < -0.02 && metrics.macd1h.hist > 0) longScore += 7;
+  if (metrics.atr15m && metrics.latest && metrics.atr15m / metrics.latest * 100 > 0.6) riskScore += 20;
+  if (Math.abs(longScore - shortScore) < 12) riskScore += 15;
+  let longWarningScore = 25;
+  let shortWarningScore = 25;
+  if (metrics.higherLows5m) longWarningScore += 22;
+  if (metrics.lowerHighs5m) shortWarningScore += 22;
+  if (metrics.latest > metrics.vwap24h && metrics.macd15m.hist > 0) longWarningScore += 24;
+  if (metrics.latest < metrics.vwap24h && metrics.macd15m.hist < 0) shortWarningScore += 24;
+  if (metrics.latest > metrics.resistance - metrics.atr15m * 0.25) longWarningScore += 10;
+  if (metrics.latest < metrics.support + metrics.atr15m * 0.25) shortWarningScore += 10;
+  return {
+    longScore: Math.max(0, Math.min(100, Math.round(longScore))),
+    shortScore: Math.max(0, Math.min(100, Math.round(shortScore))),
+    riskScore: Math.max(0, Math.min(100, Math.round(riskScore))),
+    longWarningScore: Math.max(0, Math.min(100, Math.round(longWarningScore))),
+    shortWarningScore: Math.max(0, Math.min(100, Math.round(shortWarningScore))),
+  };
+}
+
+function closeSimPosition(state, market, action, reason) {
+  const position = state.position;
+  if (!position) return 0;
+  const latest = market.metrics.latest;
+  const rate = market.rateInfo.rate;
+  const pnlCny = simPnlCny(position, latest, rate);
+  const closeFeeCny = position.notionalUsdt * SIM_FEE_RATE * rate;
+  const netPnlCny = pnlCny - closeFeeCny;
+  state.balanceCny += netPnlCny;
+  state.totalTrades += 1;
+  if (netPnlCny > 0) {
+    state.winTrades += 1;
+    state.lossStreak = 0;
+  } else {
+    state.lossStreak += 1;
+    if (state.lossStreak >= 3) state.pauseUntil = new Date(Date.now() + SIM_PAUSE_AFTER_LOSSES_MS).toISOString();
+  }
+  pushSimRecord(state, {
+    action,
+    side: position.side,
+    price: latest,
+    quantityBtc: position.quantityBtc,
+    marginCny: position.marginCny,
+    feeCny: closeFeeCny,
+    pnlCny: netPnlCny,
+    balanceCny: state.balanceCny,
+    reason,
+  });
+  state.position = null;
+  return netPnlCny;
+}
+
+function openSimPosition(state, market, side, reason) {
+  const latest = market.metrics.latest;
+  const rate = market.rateInfo.rate;
+  const equityCny = state.balanceCny;
+  const riskDistance = Math.max(market.metrics.atr15m * 1.2, latest * 0.004);
+  const maxMarginCny = equityCny * SIM_MAX_MARGIN_PCT;
+  const maxRiskUsdt = equityCny * SIM_MAX_LOSS_PCT / rate;
+  const qtyByRisk = maxRiskUsdt / riskDistance;
+  const qtyByMargin = (maxMarginCny / rate * SIM_LEVERAGE) / latest;
+  const quantityBtc = Math.max(0, Math.min(qtyByRisk, qtyByMargin));
+  const notionalUsdt = quantityBtc * latest;
+  const marginUsdt = notionalUsdt / SIM_LEVERAGE;
+  const marginCny = marginUsdt * rate;
+  const feeCny = notionalUsdt * SIM_FEE_RATE * rate;
+  const stopLoss = side === "long" ? latest - riskDistance : latest + riskDistance;
+  const takeProfit = side === "long" ? latest + riskDistance * 1.8 : latest - riskDistance * 1.8;
+  state.balanceCny -= feeCny;
+  state.position = {
+    side,
+    entryPrice: latest,
+    quantityBtc,
+    marginCny,
+    marginUsdt,
+    notionalUsdt,
+    leverage: SIM_LEVERAGE,
+    takeProfit,
+    stopLoss,
+    openedAt: new Date().toISOString(),
+    reason,
+  };
+  state.lastDecisionAt = new Date().toISOString();
+  state.lastOpenSide = side;
+  pushSimRecord(state, {
+    action: side === "long" ? "开多" : "开空",
+    side,
+    price: latest,
+    quantityBtc,
+    marginCny,
+    feeCny,
+    pnlCny: -feeCny,
+    balanceCny: state.balanceCny,
+    reason,
+  });
+}
+
+function canOpenSim(state, scores, side) {
+  const now = Date.now();
+  if (state.pauseUntil && new Date(state.pauseUntil).getTime() > now) return "连续亏损3笔，暂停开仓2小时。";
+  if (state.balanceCny < SIM_INITIAL_CNY * 0.7) return "模拟权益低于初始资金70%，进入冷静模式，只允许平仓。";
+  if (scores.riskScore >= 80) return "风险评分过高，禁止开新仓。";
+  if (state.lastDecisionAt && state.lastOpenSide === side && now - new Date(state.lastDecisionAt).getTime() < SIM_COOLDOWN_MS) return "同方向开仓冷却中，避免页面刷新造成过度交易。";
+  return "";
+}
+
+function runSimDecision(state, market) {
+  const metrics = market.metrics;
+  const scores = simScores(metrics);
+  const rate = market.rateInfo.rate;
+  let decision = "观望";
+  let reason = "多空确认分和预警分未形成同向优势，继续等待。";
+  if (state.position) {
+    const position = state.position;
+    if ((position.side === "long" && metrics.latest <= position.stopLoss) || (position.side === "short" && metrics.latest >= position.stopLoss)) {
+      closeSimPosition(state, market, "止损平仓", "价格触及开仓时锁定止损，优先控制单笔亏损。");
+      decision = "止损平仓";
+      reason = "价格触及开仓时锁定止损。";
+    } else if ((position.side === "long" && metrics.latest >= position.takeProfit) || (position.side === "short" && metrics.latest <= position.takeProfit)) {
+      closeSimPosition(state, market, "止盈平仓", "价格触及开仓时锁定止盈，落袋为安。");
+      decision = "止盈平仓";
+      reason = "价格触及开仓时锁定止盈。";
+    } else if (position.side === "long" && scores.shortScore - scores.longScore >= 22 && scores.shortWarningScore >= 65) {
+      closeSimPosition(state, market, "反向信号平仓", "空头评分和预警明显反向，先退出多单。");
+      decision = "反向信号平仓";
+      reason = "空头评分和预警明显反向。";
+    } else if (position.side === "short" && scores.longScore - scores.shortScore >= 22 && scores.longWarningScore >= 65) {
+      closeSimPosition(state, market, "反向信号平仓", "多头评分和预警明显反向，先退出空单。");
+      decision = "反向信号平仓";
+      reason = "多头评分和预警明显反向。";
+    } else {
+      decision = "持仓";
+      reason = "已有仓位未触及止盈止损，原计划继续执行。";
+    }
+  }
+  if (!state.position && !["止损平仓", "止盈平仓", "反向信号平仓"].includes(decision)) {
+    const longReady = scores.longScore >= 64 && scores.longWarningScore >= 64 && scores.longScore - scores.shortScore >= 12;
+    const shortReady = scores.shortScore >= 64 && scores.shortWarningScore >= 64 && scores.shortScore - scores.longScore >= 12;
+    if (longReady) {
+      const blockReason = canOpenSim(state, scores, "long");
+      if (blockReason) {
+        decision = "风控禁止开仓";
+        reason = blockReason;
+      } else {
+        reason = "多头确认分和预警分同向，价格站上VWAP且短线结构偏强，开多试仓。";
+        openSimPosition(state, market, "long", reason);
+        decision = "开多";
+      }
+    } else if (shortReady) {
+      const blockReason = canOpenSim(state, scores, "short");
+      if (blockReason) {
+        decision = "风控禁止开仓";
+        reason = blockReason;
+      } else {
+        reason = "空头确认分和预警分同向，价格跌破VWAP且1小时MACD偏弱，开空试仓。";
+        openSimPosition(state, market, "short", reason);
+        decision = "开空";
+      }
+    }
+  }
+  if (["观望", "风控禁止开仓"].includes(decision)) {
+    const latestRecord = (state.records || [])[0];
+    const shouldLog = !latestRecord
+      || latestRecord.action !== decision
+      || Date.now() - new Date(latestRecord.createdAt || 0).getTime() > SIM_COOLDOWN_MS;
+    if (shouldLog) {
+      pushSimRecord(state, {
+        action: decision,
+        side: state.position?.side || "flat",
+        price: metrics.latest,
+        quantityBtc: state.position?.quantityBtc || 0,
+        marginCny: state.position?.marginCny || 0,
+        feeCny: 0,
+        pnlCny: 0,
+        balanceCny: state.balanceCny,
+        reason,
+      });
+    }
+  }
+  const floatingPnlCny = simPnlCny(state.position, metrics.latest, rate);
+  const equityCny = state.balanceCny + floatingPnlCny;
+  state.maxEquityCny = Math.max(Number(state.maxEquityCny || SIM_INITIAL_CNY), equityCny);
+  state.updatedAt = new Date().toISOString();
+  return {
+    decision,
+    reason,
+    scores,
+    floatingPnlCny,
+    equityCny,
+    drawdownPct: state.maxEquityCny ? (equityCny / state.maxEquityCny - 1) * 100 : 0,
+    winRate: state.totalTrades ? state.winTrades / state.totalTrades * 100 : 0,
+  };
+}
+
+async function simBrief(request, env) {
+  try {
+    if (!env.ACCOUNT_KV) return jsonResponse({ ok: false, error: "ACCOUNT_KV 未绑定，模拟盘无法保存状态" }, 500);
+    if (request.method === "POST" && new URL(request.url).pathname === "/sim/reset") {
+      const state = emptySimState();
+      pushSimRecord(state, { action: "重置模拟盘", side: "flat", price: 0, quantityBtc: 0, marginCny: 0, feeCny: 0, pnlCny: 0, balanceCny: state.balanceCny, reason: "手动重置为初始本金¥50,000。" });
+      await writeSimState(env, state);
+      return jsonResponse({ ok: true, reset: true, state });
+    }
+    const [state, market] = await Promise.all([readSimState(env), simMarketSnapshot()]);
+    const result = runSimDecision(state, market);
+    await writeSimState(env, state);
+    return jsonResponse({
+      ok: true,
+      source: "ai-sim-worker",
+      updatedAt: state.updatedAt,
+      balanceCny: state.balanceCny,
+      equityCny: result.equityCny,
+      floatingPnlCny: result.floatingPnlCny,
+      initialCny: state.initialCny,
+      maxEquityCny: state.maxEquityCny,
+      drawdownPct: result.drawdownPct,
+      winRate: result.winRate,
+      totalTrades: state.totalTrades,
+      winTrades: state.winTrades,
+      lossStreak: state.lossStreak,
+      pauseUntil: state.pauseUntil,
+      decision: result.decision,
+      decisionReason: result.reason,
+      scores: result.scores,
+      position: state.position,
+      records: (state.records || []).slice(0, 100),
+      market: {
+        latest: market.metrics.latest,
+        cnyRate: market.rateInfo.rate,
+        cnyRateSource: market.rateInfo.source,
+        funding: market.metrics.funding,
+        support: market.metrics.support,
+        resistance: market.metrics.resistance,
+        vwap24h: market.metrics.vwap24h,
+      },
+      riskRules: {
+        maxMarginPct: SIM_MAX_MARGIN_PCT,
+        maxLossPct: SIM_MAX_LOSS_PCT,
+        leverage: SIM_LEVERAGE,
+        feeRate: SIM_FEE_RATE,
+        cooldownMinutes: SIM_COOLDOWN_MS / 60000,
+      },
+    });
+  } catch (error) {
+    return jsonResponse({ ok: false, error: String(error), updatedAt: new Date().toISOString(), source: "ai-sim-worker" }, 500);
+  }
 }
 
 function macroDirection(event) {
@@ -381,6 +883,7 @@ export default {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
     const url = new URL(request.url);
     if (url.pathname === "/macro") return macroBrief(request, env);
+    if (url.pathname === "/sim" || url.pathname === "/sim/reset") return simBrief(request, env);
     try {
       for (const key of ["OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"]) {
         if (!env[key]) throw new Error(`Missing ${key}`);

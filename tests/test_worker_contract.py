@@ -29,6 +29,13 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("白宫加密会议推动CLARITY Act", source)
         self.assertIn("Strategic Bitcoin Reserve", source)
         self.assertIn("加密政策", source)
+        self.assertIn("SIM_ACCOUNT_STATE_V1", source)
+        self.assertIn("SIM_INITIAL_CNY", source)
+        self.assertIn("function simBrief", source)
+        self.assertIn('url.pathname === "/sim"', source)
+        self.assertIn('url.pathname === "/sim/reset"', source)
+        self.assertIn("runSimDecision", source)
+        self.assertIn("SIM_MAX_LOSS_PCT", source)
 
 
 if __name__ == "__main__":
