@@ -36,6 +36,8 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn('url.pathname === "/sim/reset"', source)
         self.assertIn("runSimDecision", source)
         self.assertIn("SIM_MAX_LOSS_PCT", source)
+        self.assertIn("binanceSimMarketSnapshot", source)
+        self.assertIn("Binance USD-M备用行情", source)
 
 
 if __name__ == "__main__":

@@ -1735,7 +1735,9 @@ def render_report(
       setText('simEntryMark', p ? `${{fmtPrice(Number(p.entryPrice || 0))}} / ${{fmtPrice(Number(payload.market?.latest || 0))}}` : `- / ${{fmtPrice(Number(payload.market?.latest || 0))}}`);
       setText('simTpSl', p ? `${{fmtPrice(Number(p.takeProfit || 0))}} / ${{fmtPrice(Number(p.stopLoss || 0))}}` : '- / -');
       setText('simDecision', `本次决策：${{payload.decision || '等待'}} · ${{payload.decisionReason || '-'}}`);
-      setText('simStatus', `状态：成功 · ${{fmtTime(new Date(payload.updatedAt || Date.now()))}} · 回撤 ${{fmtPct(Number(payload.drawdownPct || 0))}} · 汇率 ${{Number(payload.market?.cnyRate || 0).toFixed(3)}}`);
+      const simSourceText = payload.market?.source || payload.marketSource || '模拟行情';
+      const simWarningText = payload.sourceWarning || payload.market?.sourceWarning || '';
+      setText('simStatus', `状态：成功 · ${{fmtTime(new Date(payload.updatedAt || Date.now()))}} · 回撤 ${{fmtPct(Number(payload.drawdownPct || 0))}} · 行情源 ${{simSourceText}} · 汇率 ${{Number(payload.market?.cnyRate || 0).toFixed(3)}}${{simWarningText ? ' · ' + simWarningText : ''}}`);
       const pnlEl = document.getElementById('simFloatingPnl');
       if (pnlEl) pnlEl.className = `value ${{simPnlClass(payload.floatingPnlCny)}}`;
       const body = document.getElementById('simRecords');

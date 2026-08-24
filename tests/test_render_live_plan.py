@@ -44,6 +44,7 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("simRecords", source)
         self.assertIn("模拟盘不连接真实账户", source)
         self.assertIn("sim-30s-sync", source)
+        self.assertIn("行情源", source)
         self.assertIn("earlyLongWarning", source)
         self.assertIn("earlyShortWarning", source)
         self.assertIn("function v5BuildEarlyMetrics", source)

@@ -1,4 +1,5 @@
 const OKX_BASE = "https://www.okx.com";
+const BINANCE_FAPI_BASE = "https://fapi.binance.com";
 const FALLBACK_CNY_RATE = 7.2;
 const TE_BASE = "https://api.tradingeconomics.com";
 const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
@@ -168,6 +169,25 @@ function okxCandle(row) {
   };
 }
 
+function binanceCandle(row) {
+  return {
+    ts: Number(row[0]),
+    open: Number(row[1]),
+    high: Number(row[2]),
+    low: Number(row[3]),
+    close: Number(row[4]),
+    volume: Number(row[5]),
+    quoteVolume: Number(row[7] || 0),
+  };
+}
+
+async function binancePublic(path, cacheTtl = 10) {
+  const response = await fetch(`${BINANCE_FAPI_BASE}${path}`, { cf: { cacheTtl } });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(`Binance public ${path} failed: ${payload.msg || response.status}`);
+  return payload;
+}
+
 function closes(candles) {
   return (candles || []).map((item) => Number(item.close || 0)).filter((value) => Number.isFinite(value) && value > 0);
 }
@@ -264,21 +284,7 @@ function lowerHighs(candles, count = 3) {
   return slice.length >= count && slice.every((item, index) => index === 0 || item.high < slice[index - 1].high);
 }
 
-async function simMarketSnapshot() {
-  const [markData, c15Rows, c1hRows, c4hRows, c5Rows, fundingRows, rateInfo] = await Promise.all([
-    okxPublic("/api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP", 2),
-    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=160", 10),
-    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=160", 30),
-    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=160", 60),
-    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=80", 10),
-    okxPublicOptional("/api/v5/public/funding-rate?instId=BTC-USDT-SWAP", [{ fundingRate: 0 }], 120),
-    cnyRate(),
-  ]);
-  const c15 = c15Rows.map(okxCandle).reverse();
-  const c1h = c1hRows.map(okxCandle).reverse();
-  const c4h = c4hRows.map(okxCandle).reverse();
-  const c5m = c5Rows.map(okxCandle).reverse();
-  const latest = Number(markData[0]?.markPx || c15[c15.length - 1]?.close || 0);
+function buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, source) {
   const closes15 = closes(c15);
   const closes1h = closes(c1h);
   const closes4h = closes(c4h);
@@ -288,7 +294,6 @@ async function simMarketSnapshot() {
   const resistance = supportWindow.length ? Math.max(...supportWindow.map((item) => item.high || latest)) : latest * 1.005;
   const vwap24h = vwap(recent24h);
   const atr15m = atr(c15);
-  const funding = Number(fundingRows[0]?.fundingRate || 0) * 100;
   const metrics = {
     latest,
     support,
@@ -309,7 +314,53 @@ async function simMarketSnapshot() {
     higherLows5m: higherLows(c5m),
     lowerHighs5m: lowerHighs(c5m),
   };
-  return { metrics, rateInfo, updatedAt: new Date().toISOString() };
+  return { metrics, rateInfo, source, updatedAt: new Date().toISOString() };
+}
+
+async function okxSimMarketSnapshot() {
+  const [markData, c15Rows, c1hRows, c4hRows, c5Rows, fundingRows, rateInfo] = await Promise.all([
+    okxPublic("/api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP", 2),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=160", 10),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=160", 30),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=160", 60),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=80", 10),
+    okxPublicOptional("/api/v5/public/funding-rate?instId=BTC-USDT-SWAP", [{ fundingRate: 0 }], 120),
+    cnyRate(),
+  ]);
+  const c15 = c15Rows.map(okxCandle).reverse();
+  const c1h = c1hRows.map(okxCandle).reverse();
+  const c4h = c4hRows.map(okxCandle).reverse();
+  const c5m = c5Rows.map(okxCandle).reverse();
+  const latest = Number(markData[0]?.markPx || c15[c15.length - 1]?.close || 0);
+  const funding = Number(fundingRows[0]?.fundingRate || 0) * 100;
+  return buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, "OKX公共行情");
+}
+
+async function binanceSimMarketSnapshot() {
+  const [premium, c15Rows, c1hRows, c4hRows, c5Rows, rateInfo] = await Promise.all([
+    binancePublic("/fapi/v1/premiumIndex?symbol=BTCUSDT", 2),
+    binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=15m&limit=160", 10),
+    binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=160", 30),
+    binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=160", 60),
+    binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=80", 10),
+    cnyRate(),
+  ]);
+  const c15 = c15Rows.map(binanceCandle);
+  const c1h = c1hRows.map(binanceCandle);
+  const c4h = c4hRows.map(binanceCandle);
+  const c5m = c5Rows.map(binanceCandle);
+  const latest = Number(premium.markPrice || c15[c15.length - 1]?.close || 0);
+  const funding = Number(premium.lastFundingRate || 0) * 100;
+  return buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, "Binance USD-M备用行情");
+}
+
+async function simMarketSnapshot() {
+  try {
+    return await okxSimMarketSnapshot();
+  } catch (error) {
+    const fallback = await binanceSimMarketSnapshot();
+    return { ...fallback, sourceWarning: `OKX公共行情失败，已切换Binance备用：${String(error).slice(0, 100)}` };
+  }
 }
 
 async function weeklyPerformance(env, equityCny) {
@@ -637,6 +688,8 @@ async function simBrief(request, env) {
     return jsonResponse({
       ok: true,
       source: "ai-sim-worker",
+      marketSource: market.source,
+      sourceWarning: market.sourceWarning || "",
       updatedAt: state.updatedAt,
       balanceCny: state.balanceCny,
       equityCny: result.equityCny,
@@ -656,6 +709,8 @@ async function simBrief(request, env) {
       records: (state.records || []).slice(0, 100),
       market: {
         latest: market.metrics.latest,
+        source: market.source,
+        sourceWarning: market.sourceWarning || "",
         cnyRate: market.rateInfo.rate,
         cnyRateSource: market.rateInfo.source,
         funding: market.metrics.funding,
