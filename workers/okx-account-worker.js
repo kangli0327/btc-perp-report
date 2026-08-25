@@ -712,6 +712,8 @@ function closeSimPosition(state, market, action, reason) {
     balanceCny: state.balanceCny,
     reason,
   });
+  state.lastDecisionAt = new Date().toISOString();
+  state.lastOpenSide = position.side;
   state.position = null;
   return netPnlCny;
 }
@@ -760,6 +762,57 @@ function closeSimPartial(state, market, target, reason) {
     closeSimPosition(state, market, "尾仓平仓", "剩余仓位过小，合并平仓。");
   }
   return netPnlCny;
+}
+
+function simTrendStillSupportsRunner(position, scores, metrics) {
+  if (!position) return false;
+  if (scores.riskScore >= 78) return false;
+  if (position.side === "long") {
+    return scores.longScore >= 70
+      && scores.longScore - scores.shortScore >= 14
+      && scores.longWarningScore >= 45
+      && Number(metrics.latest || 0) > Number(metrics.vwap24h || 0);
+  }
+  return scores.shortScore >= 70
+    && scores.shortScore - scores.longScore >= 14
+    && scores.shortWarningScore >= 45
+    && Number(metrics.latest || 0) < Number(metrics.vwap24h || Infinity);
+}
+
+function extendSimRunnerTarget(state, market, scores, reason) {
+  const position = state.position;
+  if (!position) return false;
+  const metrics = market.metrics;
+  const latest = Number(metrics.latest || 0);
+  const atrStep = Math.max(Number(metrics.atr15m || 0) * 1.2, latest * 0.004);
+  const oldTarget = Number(position.runnerTarget || 0);
+  let newTarget;
+  if (position.side === "long") {
+    const nextPsych = simPsychLevel(Math.max(latest + 1, oldTarget + 1), "long");
+    newTarget = Math.max(oldTarget + atrStep * 0.9, latest + atrStep * 1.2, nextPsych + 300);
+    position.stopLoss = Math.max(Number(position.stopLoss || 0), latest - atrStep * 0.9, Number(position.entryPrice || 0));
+  } else {
+    const nextPsych = simPsychLevel(Math.min(latest - 1, oldTarget - 1), "short");
+    newTarget = Math.min(oldTarget - atrStep * 0.9, latest - atrStep * 1.2, nextPsych - 300);
+    position.stopLoss = Math.min(Number(position.stopLoss || Infinity), latest + atrStep * 0.9, Number(position.entryPrice || 0));
+  }
+  if (!Number.isFinite(newTarget) || Math.abs(newTarget - oldTarget) < atrStep * 0.25) return false;
+  position.runnerTarget = newTarget;
+  position.takeProfit = position.takeProfit || newTarget;
+  position.runnerExtendedCount = Number(position.runnerExtendedCount || 0) + 1;
+  position.lastRunnerExtendedAt = new Date().toISOString();
+  pushSimRecord(state, {
+    action: "尾仓目标上移",
+    side: position.side,
+    price: latest,
+    quantityBtc: position.quantityBtc,
+    marginCny: position.marginCny,
+    feeCny: 0,
+    pnlCny: 0,
+    balanceCny: state.balanceCny,
+    reason,
+  });
+  return true;
 }
 
 function openSimPosition(state, market, side, reason, scores) {
@@ -851,9 +904,16 @@ function runSimDecision(state, market) {
         decision = label;
         reason = `${nextTarget.label || label}触发，已分批落袋，剩余仓位继续按突破管理。`;
       } else if (hitRunner) {
-        closeSimPosition(state, market, "尾仓止盈", "价格触及尾仓突破目标，退出剩余仓位。");
-        decision = "尾仓止盈";
-        reason = "价格触及尾仓突破目标。";
+        if (simTrendStillSupportsRunner(position, scores, metrics)) {
+          const oldTarget = Number(position.runnerTarget || 0);
+          extendSimRunnerTarget(state, market, scores, `尾仓目标${oldTarget.toFixed(1)}已到，但趋势评分仍强，不平仓追单，改为上移目标并抬高保护止损。`);
+          decision = "尾仓目标上移";
+          reason = "尾仓目标已到，但趋势仍强，继续持有尾仓并上移目标。";
+        } else {
+          closeSimPosition(state, market, "尾仓止盈", "价格触及尾仓突破目标，且趋势延伸条件不足，退出剩余仓位。");
+          decision = "尾仓止盈";
+          reason = "价格触及尾仓突破目标，趋势延伸条件不足。";
+        }
       } else if (!Array.isArray(position.partialTargets) && ((position.side === "long" && metrics.latest >= position.takeProfit) || (position.side === "short" && metrics.latest <= position.takeProfit))) {
         closeSimPosition(state, market, "止盈平仓", "价格触及开仓时锁定止盈，落袋为安。");
         decision = "止盈平仓";
