@@ -7,10 +7,14 @@ const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const FREE_MACRO_SOURCE = "official-free";
 const SIM_KV_KEY = "SIM_ACCOUNT_STATE_V1";
 const SIM_INITIAL_CNY = 50000;
-const SIM_LEVERAGE = 100;
+const SIM_BASE_LEVERAGE = 20;
+const SIM_STRONG_LEVERAGE = 30;
+const SIM_MAX_LEVERAGE = 50;
 const SIM_FEE_RATE = 0.0005;
+const SIM_BASE_MARGIN_PCT = 0.08;
 const SIM_MAX_MARGIN_PCT = 0.12;
-const SIM_MAX_LOSS_PCT = 0.03;
+const SIM_BASE_LOSS_PCT = 0.015;
+const SIM_MAX_LOSS_PCT = 0.025;
 const SIM_COOLDOWN_MS = 15 * 60 * 1000;
 const SIM_PAUSE_AFTER_LOSSES_MS = 2 * 60 * 60 * 1000;
 const POLICY_CRYPTO_KEYWORDS = [
@@ -549,6 +553,41 @@ function simScores(metrics) {
   };
 }
 
+function simSignalProfile(scores, side, state) {
+  const confirm = side === "long" ? scores.longScore : scores.shortScore;
+  const opposite = side === "long" ? scores.shortScore : scores.longScore;
+  const warning = side === "long" ? scores.longWarningScore : scores.shortWarningScore;
+  const edge = confirm - opposite;
+  let leverage = SIM_BASE_LEVERAGE;
+  let marginPct = SIM_BASE_MARGIN_PCT;
+  let lossPct = SIM_BASE_LOSS_PCT;
+  let label = "普通信号";
+  if (confirm >= 78 && warning >= 72 && edge >= 20 && scores.riskScore <= 45) {
+    leverage = SIM_STRONG_LEVERAGE;
+    marginPct = 0.10;
+    lossPct = 0.02;
+    label = "强信号";
+  }
+  if (confirm >= 88 && warning >= 82 && edge >= 28 && scores.riskScore <= 35) {
+    leverage = SIM_MAX_LEVERAGE;
+    marginPct = SIM_MAX_MARGIN_PCT;
+    lossPct = SIM_MAX_LOSS_PCT;
+    label = "极强信号";
+  }
+  const lastClosed = (state.records || []).find((record) => ["止盈平仓", "止损平仓", "反向信号平仓"].includes(record.action));
+  if (lastClosed && Number(lastClosed.pnlCny || 0) > 0) {
+    marginPct *= 0.5;
+    label += "，上一笔盈利后保证金减半";
+  }
+  if (state.lossStreak > 0 || scores.riskScore >= 60) {
+    leverage = Math.min(leverage, 10);
+    marginPct = Math.min(marginPct, 0.05);
+    lossPct = Math.min(lossPct, 0.012);
+    label += "，风险降档";
+  }
+  return { leverage, marginPct, lossPct, label, confirm, warning, edge };
+}
+
 function closeSimPosition(state, market, action, reason) {
   const position = state.position;
   if (!position) return 0;
@@ -581,18 +620,19 @@ function closeSimPosition(state, market, action, reason) {
   return netPnlCny;
 }
 
-function openSimPosition(state, market, side, reason) {
+function openSimPosition(state, market, side, reason, scores) {
   const latest = market.metrics.latest;
   const rate = market.rateInfo.rate;
   const equityCny = state.balanceCny;
+  const profile = simSignalProfile(scores, side, state);
   const riskDistance = Math.max(market.metrics.atr15m * 1.2, latest * 0.004);
-  const maxMarginCny = equityCny * SIM_MAX_MARGIN_PCT;
-  const maxRiskUsdt = equityCny * SIM_MAX_LOSS_PCT / rate;
+  const maxMarginCny = equityCny * profile.marginPct;
+  const maxRiskUsdt = equityCny * profile.lossPct / rate;
   const qtyByRisk = maxRiskUsdt / riskDistance;
-  const qtyByMargin = (maxMarginCny / rate * SIM_LEVERAGE) / latest;
+  const qtyByMargin = (maxMarginCny / rate * profile.leverage) / latest;
   const quantityBtc = Math.max(0, Math.min(qtyByRisk, qtyByMargin));
   const notionalUsdt = quantityBtc * latest;
-  const marginUsdt = notionalUsdt / SIM_LEVERAGE;
+  const marginUsdt = notionalUsdt / profile.leverage;
   const marginCny = marginUsdt * rate;
   const feeCny = notionalUsdt * SIM_FEE_RATE * rate;
   const stopLoss = side === "long" ? latest - riskDistance : latest + riskDistance;
@@ -605,11 +645,12 @@ function openSimPosition(state, market, side, reason) {
     marginCny,
     marginUsdt,
     notionalUsdt,
-    leverage: SIM_LEVERAGE,
+    leverage: profile.leverage,
+    signalProfile: profile,
     takeProfit,
     stopLoss,
     openedAt: new Date().toISOString(),
-    reason,
+    reason: `${reason} 杠杆${profile.leverage}x，${profile.label}，单笔风险上限约${(profile.lossPct * 100).toFixed(1)}%。`,
   };
   state.lastDecisionAt = new Date().toISOString();
   state.lastOpenSide = side;
@@ -622,7 +663,7 @@ function openSimPosition(state, market, side, reason) {
     feeCny,
     pnlCny: -feeCny,
     balanceCny: state.balanceCny,
-    reason,
+    reason: state.position.reason,
   });
 }
 
@@ -674,7 +715,7 @@ function runSimDecision(state, market) {
         reason = blockReason;
       } else {
         reason = "多头确认分和预警分同向，价格站上VWAP且短线结构偏强，开多试仓。";
-        openSimPosition(state, market, "long", reason);
+        openSimPosition(state, market, "long", reason, scores);
         decision = "开多";
       }
     } else if (shortReady) {
@@ -684,7 +725,7 @@ function runSimDecision(state, market) {
         reason = blockReason;
       } else {
         reason = "空头确认分和预警分同向，价格跌破VWAP且1小时MACD偏弱，开空试仓。";
-        openSimPosition(state, market, "short", reason);
+        openSimPosition(state, market, "short", reason, scores);
         decision = "开空";
       }
     }
@@ -769,9 +810,13 @@ async function simBrief(request, env) {
         vwap24h: market.metrics.vwap24h,
       },
       riskRules: {
+        baseMarginPct: SIM_BASE_MARGIN_PCT,
         maxMarginPct: SIM_MAX_MARGIN_PCT,
+        baseLossPct: SIM_BASE_LOSS_PCT,
         maxLossPct: SIM_MAX_LOSS_PCT,
-        leverage: SIM_LEVERAGE,
+        baseLeverage: SIM_BASE_LEVERAGE,
+        strongLeverage: SIM_STRONG_LEVERAGE,
+        maxLeverage: SIM_MAX_LEVERAGE,
         feeRate: SIM_FEE_RATE,
         cooldownMinutes: SIM_COOLDOWN_MS / 60000,
       },
