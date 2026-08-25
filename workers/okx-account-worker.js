@@ -17,6 +17,8 @@ const SIM_BASE_LOSS_PCT = 0.015;
 const SIM_MAX_LOSS_PCT = 0.025;
 const SIM_COOLDOWN_MS = 15 * 60 * 1000;
 const SIM_PAUSE_AFTER_LOSSES_MS = 2 * 60 * 60 * 1000;
+const SIM_TP1_CLOSE_PCT = 0.35;
+const SIM_TP2_CLOSE_PCT = 0.35;
 const POLICY_CRYPTO_KEYWORDS = [
   "White House",
   "CFTC",
@@ -588,13 +590,107 @@ function simSignalProfile(scores, side, state) {
   return { leverage, marginPct, lossPct, label, confirm, warning, edge };
 }
 
+function simPsychLevel(price, side) {
+  if (!Number.isFinite(price) || price <= 0) return 0;
+  const step = price >= 10000 ? 1000 : 100;
+  return side === "long" ? Math.ceil(price / step) * step : Math.floor(price / step) * step;
+}
+
+function buildSimExitPlan(side, entryPrice, riskDistance, metrics = {}) {
+  const latest = Number(entryPrice || metrics.latest || 0);
+  const risk = Math.max(Number(riskDistance || 0), Number(metrics.atr15m || 0) * 1.2, latest * 0.004);
+  const psych = simPsychLevel(latest, side);
+  const nearPsych = side === "long"
+    ? psych > latest && psych - latest <= risk * 2.2
+    : psych > 0 && latest - psych <= risk * 2.2;
+  let tp1;
+  let tp2;
+  let runnerTarget;
+  let stopLoss;
+  if (side === "long") {
+    tp1 = latest + risk * 1.8;
+    tp2 = latest + risk * 2.9;
+    runnerTarget = latest + risk * 3.8;
+    if (nearPsych) {
+      tp1 = Math.max(tp1, psych + 120);
+      tp2 = Math.max(tp2, psych + 500);
+      runnerTarget = Math.max(runnerTarget, psych + 800);
+    }
+    stopLoss = latest - risk;
+  } else {
+    tp1 = latest - risk * 1.8;
+    tp2 = latest - risk * 2.9;
+    runnerTarget = latest - risk * 3.8;
+    if (nearPsych) {
+      tp1 = Math.min(tp1, psych - 120);
+      tp2 = Math.min(tp2, psych - 500);
+      runnerTarget = Math.min(runnerTarget, psych - 800);
+    }
+    stopLoss = latest + risk;
+  }
+  return {
+    takeProfit: tp1,
+    stopLoss,
+    runnerTarget,
+    breakoutLevel: nearPsych ? psych : null,
+    breakoutMode: nearPsych,
+    partialTargets: [
+      { id: "tp1", label: "第一止盈", price: tp1, closePct: SIM_TP1_CLOSE_PCT, hit: false },
+      { id: "tp2", label: "第二止盈", price: tp2, closePct: SIM_TP2_CLOSE_PCT, hit: false },
+    ],
+  };
+}
+
+function ensureSimExitPlan(position, market) {
+  if (!position) return null;
+  const metrics = market?.metrics || {};
+  const entry = Number(position.entryPrice || metrics.latest || 0);
+  const stop = Number(position.stopLoss || 0);
+  const existingRisk = stop > 0 ? Math.abs(entry - stop) : 0;
+  const riskDistance = Math.max(existingRisk, Number(metrics.atr15m || 0) * 1.2, entry * 0.004);
+  if (!Array.isArray(position.partialTargets) || position.partialTargets.length < 2) {
+    const plan = buildSimExitPlan(position.side, entry, riskDistance, metrics);
+    const existingTp = Number(position.takeProfit || 0);
+    if (existingTp > 0) {
+      plan.partialTargets[0].price = existingTp;
+      plan.takeProfit = existingTp;
+      if (position.side === "long") {
+        const psych = simPsychLevel(entry, "long");
+        if (psych > entry && existingTp >= psych) {
+          plan.partialTargets[1].price = Math.max(plan.partialTargets[1].price, psych + 500);
+          plan.runnerTarget = Math.max(plan.runnerTarget, psych + 800);
+          plan.breakoutLevel = psych;
+          plan.breakoutMode = true;
+        }
+      } else {
+        const psych = simPsychLevel(entry, "short");
+        if (psych > 0 && existingTp <= psych) {
+          plan.partialTargets[1].price = Math.min(plan.partialTargets[1].price, psych - 500);
+          plan.runnerTarget = Math.min(plan.runnerTarget, psych - 800);
+          plan.breakoutLevel = psych;
+          plan.breakoutMode = true;
+        }
+      }
+    }
+    position.partialTargets = plan.partialTargets;
+    position.takeProfit = plan.takeProfit;
+    position.runnerTarget = plan.runnerTarget;
+    position.breakoutLevel = plan.breakoutLevel;
+    position.breakoutMode = plan.breakoutMode;
+    position.initialQuantityBtc = Number(position.initialQuantityBtc || position.quantityBtc || 0);
+    position.planUpgradedAt = position.planUpgradedAt || new Date().toISOString();
+  }
+  position.initialQuantityBtc = Number(position.initialQuantityBtc || position.quantityBtc || 0);
+  return position;
+}
+
 function closeSimPosition(state, market, action, reason) {
   const position = state.position;
   if (!position) return 0;
   const latest = market.metrics.latest;
   const rate = market.rateInfo.rate;
   const pnlCny = simPnlCny(position, latest, rate);
-  const closeFeeCny = position.notionalUsdt * SIM_FEE_RATE * rate;
+  const closeFeeCny = position.quantityBtc * latest * SIM_FEE_RATE * rate;
   const netPnlCny = pnlCny - closeFeeCny;
   state.balanceCny += netPnlCny;
   state.totalTrades += 1;
@@ -620,6 +716,52 @@ function closeSimPosition(state, market, action, reason) {
   return netPnlCny;
 }
 
+function closeSimPartial(state, market, target, reason) {
+  const position = state.position;
+  if (!position) return 0;
+  const latest = market.metrics.latest;
+  const rate = market.rateInfo.rate;
+  const initialQty = Number(position.initialQuantityBtc || position.quantityBtc || 0);
+  const closeQty = Math.min(Number(position.quantityBtc || 0), Math.max(0, initialQty * Number(target.closePct || 0)));
+  if (!Number.isFinite(closeQty) || closeQty <= 0) return 0;
+  const rawUsdt = position.side === "long"
+    ? (latest - position.entryPrice) * closeQty
+    : (position.entryPrice - latest) * closeQty;
+  const closeFeeCny = closeQty * latest * SIM_FEE_RATE * rate;
+  const netPnlCny = rawUsdt * rate - closeFeeCny;
+  state.balanceCny += netPnlCny;
+  position.quantityBtc = Math.max(0, Number(position.quantityBtc || 0) - closeQty);
+  position.notionalUsdt = position.quantityBtc * position.entryPrice;
+  position.marginUsdt = position.leverage ? position.notionalUsdt / position.leverage : position.marginUsdt;
+  position.marginCny = position.marginUsdt * rate;
+  target.hit = true;
+  target.hitAt = new Date().toISOString();
+  target.hitPrice = latest;
+  if (target.id === "tp1") {
+    const risk = Math.abs(Number(position.entryPrice || 0) - Number(position.stopLoss || 0));
+    const breakevenBuffer = Math.max(risk * 0.15, Number(position.entryPrice || 0) * 0.001);
+    position.stopLoss = position.side === "long"
+      ? Math.max(Number(position.stopLoss || 0), Number(position.entryPrice || 0) + breakevenBuffer)
+      : Math.min(Number(position.stopLoss || Infinity), Number(position.entryPrice || 0) - breakevenBuffer);
+    position.stopMovedAfterTp1 = true;
+  }
+  pushSimRecord(state, {
+    action: target.id === "tp1" ? "第一止盈减仓" : "第二止盈减仓",
+    side: position.side,
+    price: latest,
+    quantityBtc: closeQty,
+    marginCny: position.marginCny,
+    feeCny: closeFeeCny,
+    pnlCny: netPnlCny,
+    balanceCny: state.balanceCny,
+    reason,
+  });
+  if (position.quantityBtc <= Math.max(0.0001, initialQty * 0.05)) {
+    closeSimPosition(state, market, "尾仓平仓", "剩余仓位过小，合并平仓。");
+  }
+  return netPnlCny;
+}
+
 function openSimPosition(state, market, side, reason, scores) {
   const latest = market.metrics.latest;
   const rate = market.rateInfo.rate;
@@ -635,22 +777,26 @@ function openSimPosition(state, market, side, reason, scores) {
   const marginUsdt = notionalUsdt / profile.leverage;
   const marginCny = marginUsdt * rate;
   const feeCny = notionalUsdt * SIM_FEE_RATE * rate;
-  const stopLoss = side === "long" ? latest - riskDistance : latest + riskDistance;
-  const takeProfit = side === "long" ? latest + riskDistance * 1.8 : latest - riskDistance * 1.8;
+  const exitPlan = buildSimExitPlan(side, latest, riskDistance, market.metrics);
   state.balanceCny -= feeCny;
   state.position = {
     side,
     entryPrice: latest,
     quantityBtc,
+    initialQuantityBtc: quantityBtc,
     marginCny,
     marginUsdt,
     notionalUsdt,
     leverage: profile.leverage,
     signalProfile: profile,
-    takeProfit,
-    stopLoss,
+    takeProfit: exitPlan.takeProfit,
+    stopLoss: exitPlan.stopLoss,
+    partialTargets: exitPlan.partialTargets,
+    runnerTarget: exitPlan.runnerTarget,
+    breakoutLevel: exitPlan.breakoutLevel,
+    breakoutMode: exitPlan.breakoutMode,
     openedAt: new Date().toISOString(),
-    reason: `${reason} 杠杆${profile.leverage}x，${profile.label}，单笔风险上限约${(profile.lossPct * 100).toFixed(1)}%。`,
+    reason: `${reason} 杠杆${profile.leverage}x，${profile.label}，单笔风险上限约${(profile.lossPct * 100).toFixed(1)}%。采用分批止盈：第一档减${Math.round(SIM_TP1_CLOSE_PCT * 100)}%，第二档减${Math.round(SIM_TP2_CLOSE_PCT * 100)}%，剩余尾仓跟踪突破。`,
   };
   state.lastDecisionAt = new Date().toISOString();
   state.lastOpenSide = side;
@@ -684,28 +830,53 @@ function runSimDecision(state, market) {
   let reason = "多空确认分和预警分未形成同向优势，继续等待。";
   if (state.position) {
     const position = state.position;
+    ensureSimExitPlan(position, market);
     if ((position.side === "long" && metrics.latest <= position.stopLoss) || (position.side === "short" && metrics.latest >= position.stopLoss)) {
       closeSimPosition(state, market, "止损平仓", "价格触及开仓时锁定止损，优先控制单笔亏损。");
       decision = "止损平仓";
       reason = "价格触及开仓时锁定止损。";
-    } else if ((position.side === "long" && metrics.latest >= position.takeProfit) || (position.side === "short" && metrics.latest <= position.takeProfit)) {
-      closeSimPosition(state, market, "止盈平仓", "价格触及开仓时锁定止盈，落袋为安。");
-      decision = "止盈平仓";
-      reason = "价格触及开仓时锁定止盈。";
-    } else if (position.side === "long" && scores.shortScore - scores.longScore >= 22 && scores.shortWarningScore >= 65) {
-      closeSimPosition(state, market, "反向信号平仓", "空头评分和预警明显反向，先退出多单。");
-      decision = "反向信号平仓";
-      reason = "空头评分和预警明显反向。";
-    } else if (position.side === "short" && scores.longScore - scores.shortScore >= 22 && scores.longWarningScore >= 65) {
-      closeSimPosition(state, market, "反向信号平仓", "多头评分和预警明显反向，先退出空单。");
-      decision = "反向信号平仓";
-      reason = "多头评分和预警明显反向。";
     } else {
-      decision = "持仓";
-      reason = "已有仓位未触及止盈止损，原计划继续执行。";
+      const nextTarget = (position.partialTargets || []).find((target) => !target.hit);
+      const hitPartial = nextTarget && (
+        (position.side === "long" && metrics.latest >= Number(nextTarget.price || 0))
+        || (position.side === "short" && metrics.latest <= Number(nextTarget.price || 0))
+      );
+      const hitRunner = !hitPartial && Number(position.runnerTarget || 0) > 0 && (
+        (position.side === "long" && metrics.latest >= Number(position.runnerTarget || 0))
+        || (position.side === "short" && metrics.latest <= Number(position.runnerTarget || 0))
+      );
+      if (hitPartial) {
+        const label = nextTarget.id === "tp1" ? "第一止盈减仓" : "第二止盈减仓";
+        closeSimPartial(state, market, nextTarget, `${nextTarget.label || label}触发，先落袋一部分，剩余仓位继续看突破延伸。`);
+        decision = label;
+        reason = `${nextTarget.label || label}触发，已分批落袋，剩余仓位继续按突破管理。`;
+      } else if (hitRunner) {
+        closeSimPosition(state, market, "尾仓止盈", "价格触及尾仓突破目标，退出剩余仓位。");
+        decision = "尾仓止盈";
+        reason = "价格触及尾仓突破目标。";
+      } else if (!Array.isArray(position.partialTargets) && ((position.side === "long" && metrics.latest >= position.takeProfit) || (position.side === "short" && metrics.latest <= position.takeProfit))) {
+        closeSimPosition(state, market, "止盈平仓", "价格触及开仓时锁定止盈，落袋为安。");
+        decision = "止盈平仓";
+        reason = "价格触及开仓时锁定止盈。";
+      } else if (position.side === "long" && scores.shortScore - scores.longScore >= 22 && scores.shortWarningScore >= 65) {
+        closeSimPosition(state, market, "反向信号平仓", "空头评分和预警明显反向，先退出多单。");
+        decision = "反向信号平仓";
+        reason = "空头评分和预警明显反向。";
+      } else if (position.side === "short" && scores.longScore - scores.shortScore >= 22 && scores.longWarningScore >= 65) {
+        closeSimPosition(state, market, "反向信号平仓", "多头评分和预警明显反向，先退出空单。");
+        decision = "反向信号平仓";
+        reason = "多头评分和预警明显反向。";
+      } else {
+        decision = "持仓";
+        if (position.breakoutMode && position.breakoutLevel) {
+          reason = `已有仓位按突破管理执行：先看${position.breakoutLevel}整数关口是否站稳，TP1/TP2分批落袋，尾仓看延伸。`;
+        } else {
+          reason = "已有仓位未触及止盈止损，分批止盈计划继续执行。";
+        }
+      }
     }
   }
-  if (!state.position && !["止损平仓", "止盈平仓", "反向信号平仓"].includes(decision)) {
+  if (!state.position && !["止损平仓", "止盈平仓", "第一止盈减仓", "第二止盈减仓", "尾仓止盈", "尾仓平仓", "反向信号平仓"].includes(decision)) {
     const longReady = scores.longScore >= 64 && scores.longWarningScore >= 64 && scores.longScore - scores.shortScore >= 12;
     const shortReady = scores.shortScore >= 64 && scores.shortWarningScore >= 64 && scores.shortScore - scores.longScore >= 12;
     if (longReady) {

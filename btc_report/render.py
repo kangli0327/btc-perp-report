@@ -275,7 +275,7 @@ def render_report(
     .sim-actions button {{ min-height:36px; border:1px solid #98a2b3; border-radius:8px; background:#fff; color:#17202a; font-weight:760; padding:6px 12px; }}
     .sim-grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-top:10px; }}
     .sim-card {{ background:#f8fafc; border:1px solid var(--line); border-radius:8px; padding:10px; }}
-    .sim-card .value {{ font-size:19px; }}
+    .sim-card .value {{ font-size:19px; line-height:1.35; overflow-wrap:anywhere; }}
     .sim-records {{ overflow-x:auto; margin-top:10px; border:1px solid var(--line); border-radius:8px; }}
     .sim-records table {{ width:100%; min-width:820px; border-collapse:collapse; background:#fff; }}
     .sim-records th,.sim-records td {{ padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; font-size:13px; vertical-align:top; }}
@@ -1710,6 +1710,18 @@ def render_report(
     function simPnlClass(value) {{
       return Number(value || 0) < 0 ? 'sim-loss' : Number(value || 0) > 0 ? 'sim-profit' : '';
     }}
+    function simTpSlText(position) {{
+      if (!position) return '- / -';
+      const targets = Array.isArray(position.partialTargets) ? position.partialTargets : [];
+      const tp1 = targets[0]?.price || position.takeProfit || 0;
+      const tp2 = targets[1]?.price || 0;
+      const runner = position.runnerTarget || 0;
+      const parts = [`TP1 ${{fmtPrice(Number(tp1 || 0))}}`];
+      if (tp2) parts.push(`TP2 ${{fmtPrice(Number(tp2))}}`);
+      if (runner) parts.push(`尾仓 ${{fmtPrice(Number(runner))}}`);
+      parts.push(`SL ${{fmtPrice(Number(position.stopLoss || 0))}}`);
+      return parts.join(' / ');
+    }}
     function updateSimFloatingFromLive(latest) {{
       if (!latestSimState || !latestSimState.position || !Number.isFinite(Number(latest))) return;
       const p = latestSimState.position;
@@ -1733,7 +1745,7 @@ def render_report(
       setText('simPositionSide', p ? `${{simSideText(p.side)}} · ${{p.leverage || 100}}x` : '空仓');
       setText('simPositionQty', p ? Number(p.quantityBtc || 0).toFixed(4) : '0');
       setText('simEntryMark', p ? `${{fmtPrice(Number(p.entryPrice || 0))}} / ${{fmtPrice(Number(payload.market?.latest || 0))}}` : `- / ${{fmtPrice(Number(payload.market?.latest || 0))}}`);
-      setText('simTpSl', p ? `${{fmtPrice(Number(p.takeProfit || 0))}} / ${{fmtPrice(Number(p.stopLoss || 0))}}` : '- / -');
+      setText('simTpSl', simTpSlText(p));
       setText('simDecision', `本次决策：${{payload.decision || '等待'}} · ${{payload.decisionReason || '-'}}`);
       const simSourceText = payload.market?.source || payload.marketSource || '模拟行情';
       const simWarningText = payload.sourceWarning || payload.market?.sourceWarning || '';
