@@ -995,6 +995,16 @@ function runSimDecision(state, market) {
   };
 }
 
+async function runSimCycle(env, trigger = "api") {
+  if (!env.ACCOUNT_KV) throw new Error("ACCOUNT_KV 未绑定，模拟盘无法保存状态");
+  const [state, market] = await Promise.all([readSimState(env), simMarketSnapshot()]);
+  state.lastSimTrigger = trigger;
+  const result = runSimDecision(state, market);
+  if (trigger === "scheduled") state.lastScheduledRunAt = new Date().toISOString();
+  await writeSimState(env, state);
+  return { state, market, result };
+}
+
 async function simBrief(request, env) {
   try {
     if (!env.ACCOUNT_KV) return jsonResponse({ ok: false, error: "ACCOUNT_KV 未绑定，模拟盘无法保存状态" }, 500);
@@ -1004,9 +1014,7 @@ async function simBrief(request, env) {
       await writeSimState(env, state);
       return jsonResponse({ ok: true, reset: true, state });
     }
-    const [state, market] = await Promise.all([readSimState(env), simMarketSnapshot()]);
-    const result = runSimDecision(state, market);
-    await writeSimState(env, state);
+    const { state, market, result } = await runSimCycle(env, "api");
     return jsonResponse({
       ok: true,
       source: "ai-sim-worker",
@@ -1024,6 +1032,8 @@ async function simBrief(request, env) {
       winTrades: state.winTrades,
       lossStreak: state.lossStreak,
       pauseUntil: state.pauseUntil,
+      lastSimTrigger: state.lastSimTrigger || "api",
+      lastScheduledRunAt: state.lastScheduledRunAt || null,
       decision: result.decision,
       decisionReason: result.reason,
       scores: result.scores,
@@ -1050,6 +1060,7 @@ async function simBrief(request, env) {
         maxLeverage: SIM_MAX_LEVERAGE,
         feeRate: SIM_FEE_RATE,
         cooldownMinutes: SIM_COOLDOWN_MS / 60000,
+        backgroundCron: "*/5 * * * *",
       },
     });
   } catch (error) {
@@ -1268,6 +1279,11 @@ async function macroBrief(request, env) {
 }
 
 export default {
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(runSimCycle(env, "scheduled").catch((error) => {
+      console.error("scheduled sim cycle failed", error);
+    }));
+  },
   async fetch(request, env) {
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
     const url = new URL(request.url);

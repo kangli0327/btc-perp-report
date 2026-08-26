@@ -1749,7 +1749,9 @@ def render_report(
       setText('simDecision', `本次决策：${{payload.decision || '等待'}} · ${{payload.decisionReason || '-'}}`);
       const simSourceText = payload.market?.source || payload.marketSource || '模拟行情';
       const simWarningText = payload.sourceWarning || payload.market?.sourceWarning || '';
-      setText('simStatus', `状态：成功 · ${{fmtTime(new Date(payload.updatedAt || Date.now()))}} · 回撤 ${{fmtPct(Number(payload.drawdownPct || 0))}} · 行情源 ${{simSourceText}} · 汇率 ${{Number(payload.market?.cnyRate || 0).toFixed(3)}}${{simWarningText ? ' · ' + simWarningText : ''}}`);
+      const scheduledText = payload.lastScheduledRunAt ? ` · 后台 ${{fmtTime(new Date(payload.lastScheduledRunAt))}}` : ' · 后台等待首次运行';
+      const triggerText = payload.lastSimTrigger ? ` · 触发 ${{payload.lastSimTrigger === 'scheduled' ? '后台' : '页面'}}` : '';
+      setText('simStatus', `状态：成功 · ${{fmtTime(new Date(payload.updatedAt || Date.now()))}}${{scheduledText}}${{triggerText}} · 回撤 ${{fmtPct(Number(payload.drawdownPct || 0))}} · 行情源 ${{simSourceText}} · 汇率 ${{Number(payload.market?.cnyRate || 0).toFixed(3)}}${{simWarningText ? ' · ' + simWarningText : ''}}`);
       const pnlEl = document.getElementById('simFloatingPnl');
       if (pnlEl) pnlEl.className = `value ${{simPnlClass(payload.floatingPnlCny)}}`;
       const body = document.getElementById('simRecords');
