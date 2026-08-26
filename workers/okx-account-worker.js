@@ -1000,7 +1000,7 @@ async function runSimCycle(env, trigger = "api") {
   const [state, market] = await Promise.all([readSimState(env), simMarketSnapshot()]);
   state.lastSimTrigger = trigger;
   const result = runSimDecision(state, market);
-  if (trigger === "scheduled") state.lastScheduledRunAt = new Date().toISOString();
+  if (trigger === "scheduled" || trigger === "github-cron") state.lastScheduledRunAt = new Date().toISOString();
   await writeSimState(env, state);
   return { state, market, result };
 }
@@ -1008,13 +1008,15 @@ async function runSimCycle(env, trigger = "api") {
 async function simBrief(request, env) {
   try {
     if (!env.ACCOUNT_KV) return jsonResponse({ ok: false, error: "ACCOUNT_KV 未绑定，模拟盘无法保存状态" }, 500);
-    if (request.method === "POST" && new URL(request.url).pathname === "/sim/reset") {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/sim/reset") {
       const state = emptySimState();
       pushSimRecord(state, { action: "重置模拟盘", side: "flat", price: 0, quantityBtc: 0, marginCny: 0, feeCny: 0, pnlCny: 0, balanceCny: state.balanceCny, reason: "手动重置为初始本金¥50,000。" });
       await writeSimState(env, state);
       return jsonResponse({ ok: true, reset: true, state });
     }
-    const { state, market, result } = await runSimCycle(env, "api");
+    const requestedTrigger = url.searchParams.get("trigger") === "github-cron" ? "github-cron" : "api";
+    const { state, market, result } = await runSimCycle(env, requestedTrigger);
     return jsonResponse({
       ok: true,
       source: "ai-sim-worker",
