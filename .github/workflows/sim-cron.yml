@@ -18,5 +18,5 @@ jobs:
     steps:
       - name: Advance simulation account
         run: |
-          curl --fail --silent --show-error --max-time 60 \
+          curl --fail --silent --show-error --retry 3 --retry-delay 10 --retry-all-errors --max-time 60 \
             "https://btc-account.kangli0327-btc.workers.dev/sim?trigger=github-cron&ts=$(date +%s)"
