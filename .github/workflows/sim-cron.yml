@@ -1,0 +1,22 @@
+name: Run AI simulation account
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-sim-cron
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Advance simulation account
+        run: |
+          curl --fail --silent --show-error --max-time 60 \
+            "https://btc-account.kangli0327-btc.workers.dev/sim?trigger=github-cron&ts=$(date +%s)"
