@@ -16,7 +16,6 @@ const SIM_MAX_MARGIN_PCT = 0.12;
 const SIM_BASE_LOSS_PCT = 0.015;
 const SIM_MAX_LOSS_PCT = 0.025;
 const SIM_COOLDOWN_MS = 15 * 60 * 1000;
-const SIM_PAUSE_AFTER_LOSSES_MS = 2 * 60 * 60 * 1000;
 const SIM_TP1_CLOSE_PCT = 0.35;
 const SIM_TP2_CLOSE_PCT = 0.35;
 const SIM_MIN_CONFIRM_SCORE = 68;
@@ -585,7 +584,7 @@ function simSignalProfile(scores, side, state) {
     marginPct *= 0.5;
     label += "，上一笔盈利后保证金减半";
   }
-  if (state.lossStreak > 0 || scores.riskScore >= 60) {
+  if (scores.riskScore >= 60) {
     leverage = Math.min(leverage, 10);
     marginPct = Math.min(marginPct, 0.05);
     lossPct = Math.min(lossPct, 0.012);
@@ -703,7 +702,6 @@ function closeSimPosition(state, market, action, reason) {
     state.lossStreak = 0;
   } else {
     state.lossStreak += 1;
-    if (state.lossStreak >= 3) state.pauseUntil = new Date(Date.now() + SIM_PAUSE_AFTER_LOSSES_MS).toISOString();
   }
   pushSimRecord(state, {
     action,
@@ -894,15 +892,8 @@ function simEntryQuality(metrics, side) {
 }
 
 function canOpenSim(state, scores, side, metrics) {
-  const now = Date.now();
-  if (state.lossStreak >= 3 && (!state.pauseUntil || new Date(state.pauseUntil).getTime() <= now)) {
-    state.pauseUntil = new Date(now + SIM_PAUSE_AFTER_LOSSES_MS).toISOString();
-    return "连续亏损3笔，自动进入2小时冷静期。";
-  }
-  if (state.pauseUntil && new Date(state.pauseUntil).getTime() > now) return "连续亏损3笔，暂停开仓2小时。";
-  if (state.balanceCny < SIM_INITIAL_CNY * 0.7) return "模拟权益低于初始资金70%，进入冷静模式，只允许平仓。";
+  if (state.balanceCny < SIM_INITIAL_CNY * 0.7) return "模拟权益低于初始资金70%，进入保护模式，只允许平仓。";
   if (scores.riskScore >= 80) return "风险评分过高，禁止开新仓。";
-  if (state.lastDecisionAt && state.lastOpenSide === side && now - new Date(state.lastDecisionAt).getTime() < SIM_COOLDOWN_MS) return "同方向开仓冷却中，避免页面刷新造成过度交易。";
   return simEntryQuality(metrics, side);
 }
 
@@ -1029,6 +1020,7 @@ function runSimDecision(state, market) {
 async function runSimCycle(env, trigger = "api") {
   if (!env.ACCOUNT_KV) throw new Error("ACCOUNT_KV 未绑定，模拟盘无法保存状态");
   const [state, market] = await Promise.all([readSimState(env), simMarketSnapshot()]);
+  state.pauseUntil = null;
   state.lastSimTrigger = trigger;
   const result = runSimDecision(state, market);
   if (trigger === "scheduled" || trigger === "github-cron") state.lastScheduledRunAt = new Date().toISOString();
@@ -1092,7 +1084,8 @@ async function simBrief(request, env) {
         strongLeverage: SIM_STRONG_LEVERAGE,
         maxLeverage: SIM_MAX_LEVERAGE,
         feeRate: SIM_FEE_RATE,
-        cooldownMinutes: SIM_COOLDOWN_MS / 60000,
+        observationLogIntervalMinutes: SIM_COOLDOWN_MS / 60000,
+        timeCooldownRemoved: true,
         backgroundCron: "*/5 * * * *",
         minConfirmScore: SIM_MIN_CONFIRM_SCORE,
         minWarningScore: SIM_MIN_WARNING_SCORE,
