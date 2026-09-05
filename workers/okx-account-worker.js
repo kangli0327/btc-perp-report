@@ -19,6 +19,10 @@ const SIM_COOLDOWN_MS = 15 * 60 * 1000;
 const SIM_PAUSE_AFTER_LOSSES_MS = 2 * 60 * 60 * 1000;
 const SIM_TP1_CLOSE_PCT = 0.35;
 const SIM_TP2_CLOSE_PCT = 0.35;
+const SIM_MIN_CONFIRM_SCORE = 68;
+const SIM_MIN_WARNING_SCORE = 58;
+const SIM_MIN_SCORE_EDGE = 16;
+const SIM_MAX_VWAP_CHASE_PCT = 0.65;
 const POLICY_CRYPTO_KEYWORDS = [
   "White House",
   "CFTC",
@@ -866,13 +870,40 @@ function openSimPosition(state, market, side, reason, scores) {
   });
 }
 
-function canOpenSim(state, scores, side) {
+function simEntryQuality(metrics, side) {
+  const latest = Number(metrics.latest || 0);
+  const atrStep = Math.max(Number(metrics.atr15m || 0), latest * 0.003);
+  const support = Number(metrics.support || 0);
+  const resistance = Number(metrics.resistance || 0);
+  const vwapValue = Number(metrics.vwap24h || 0);
+  const vwapDistance = vwapValue ? Math.abs(latest - vwapValue) : Infinity;
+  if (side === "long") {
+    const pullbackHold = support > 0 && latest >= support && latest - support <= atrStep * 0.85;
+    const vwapReclaim = vwapValue > 0 && latest > vwapValue && vwapDistance <= atrStep * 0.75;
+    const controlledBreakout = resistance > 0 && latest > resistance && latest - resistance <= atrStep * 0.45 && Number(metrics.volumeRatio15m || 0) >= 1.12;
+    if (metrics.priceVsVwapPct > SIM_MAX_VWAP_CHASE_PCT && !controlledBreakout) return "价格已经明显高于VWAP，不追涨，等待回踩或突破确认。";
+    if (!pullbackHold && !vwapReclaim && !controlledBreakout) return "入场位置不够好：没有回踩支撑、贴近VWAP或低位突破确认。";
+  } else {
+    const reboundFail = resistance > 0 && latest <= resistance && resistance - latest <= atrStep * 0.85;
+    const vwapReject = vwapValue > 0 && latest < vwapValue && vwapDistance <= atrStep * 0.75;
+    const controlledBreakdown = support > 0 && latest < support && support - latest <= atrStep * 0.45 && Number(metrics.volumeRatio15m || 0) >= 1.12;
+    if (metrics.priceVsVwapPct < -SIM_MAX_VWAP_CHASE_PCT && !controlledBreakdown) return "价格已经明显低于VWAP，不追空，等待反弹受阻或跌破确认。";
+    if (!reboundFail && !vwapReject && !controlledBreakdown) return "入场位置不够好：没有反弹受阻、贴近VWAP或低位跌破确认。";
+  }
+  return "";
+}
+
+function canOpenSim(state, scores, side, metrics) {
   const now = Date.now();
+  if (state.lossStreak >= 3 && (!state.pauseUntil || new Date(state.pauseUntil).getTime() <= now)) {
+    state.pauseUntil = new Date(now + SIM_PAUSE_AFTER_LOSSES_MS).toISOString();
+    return "连续亏损3笔，自动进入2小时冷静期。";
+  }
   if (state.pauseUntil && new Date(state.pauseUntil).getTime() > now) return "连续亏损3笔，暂停开仓2小时。";
   if (state.balanceCny < SIM_INITIAL_CNY * 0.7) return "模拟权益低于初始资金70%，进入冷静模式，只允许平仓。";
   if (scores.riskScore >= 80) return "风险评分过高，禁止开新仓。";
   if (state.lastDecisionAt && state.lastOpenSide === side && now - new Date(state.lastDecisionAt).getTime() < SIM_COOLDOWN_MS) return "同方向开仓冷却中，避免页面刷新造成过度交易。";
-  return "";
+  return simEntryQuality(metrics, side);
 }
 
 function runSimDecision(state, market) {
@@ -937,25 +968,25 @@ function runSimDecision(state, market) {
     }
   }
   if (!state.position && !["止损平仓", "止盈平仓", "第一止盈减仓", "第二止盈减仓", "尾仓止盈", "尾仓平仓", "反向信号平仓"].includes(decision)) {
-    const longReady = scores.longScore >= 64 && scores.longWarningScore >= 64 && scores.longScore - scores.shortScore >= 12;
-    const shortReady = scores.shortScore >= 64 && scores.shortWarningScore >= 64 && scores.shortScore - scores.longScore >= 12;
+    const longReady = scores.longScore >= SIM_MIN_CONFIRM_SCORE && scores.longWarningScore >= SIM_MIN_WARNING_SCORE && scores.longScore - scores.shortScore >= SIM_MIN_SCORE_EDGE;
+    const shortReady = scores.shortScore >= SIM_MIN_CONFIRM_SCORE && scores.shortWarningScore >= SIM_MIN_WARNING_SCORE && scores.shortScore - scores.longScore >= SIM_MIN_SCORE_EDGE;
     if (longReady) {
-      const blockReason = canOpenSim(state, scores, "long");
+      const blockReason = canOpenSim(state, scores, "long", metrics);
       if (blockReason) {
         decision = "风控禁止开仓";
         reason = blockReason;
       } else {
-        reason = "多头确认分和预警分同向，价格站上VWAP且短线结构偏强，开多试仓。";
+        reason = "多头确认分和预警分同向，且入场位置通过回踩/VWAP/突破过滤，开多试仓。";
         openSimPosition(state, market, "long", reason, scores);
         decision = "开多";
       }
     } else if (shortReady) {
-      const blockReason = canOpenSim(state, scores, "short");
+      const blockReason = canOpenSim(state, scores, "short", metrics);
       if (blockReason) {
         decision = "风控禁止开仓";
         reason = blockReason;
       } else {
-        reason = "空头确认分和预警分同向，价格跌破VWAP且1小时MACD偏弱，开空试仓。";
+        reason = "空头确认分和预警分同向，且入场位置通过反弹/VWAP/跌破过滤，开空试仓。";
         openSimPosition(state, market, "short", reason, scores);
         decision = "开空";
       }
@@ -1063,6 +1094,10 @@ async function simBrief(request, env) {
         feeRate: SIM_FEE_RATE,
         cooldownMinutes: SIM_COOLDOWN_MS / 60000,
         backgroundCron: "*/5 * * * *",
+        minConfirmScore: SIM_MIN_CONFIRM_SCORE,
+        minWarningScore: SIM_MIN_WARNING_SCORE,
+        minScoreEdge: SIM_MIN_SCORE_EDGE,
+        maxVwapChasePct: SIM_MAX_VWAP_CHASE_PCT,
       },
     });
   } catch (error) {
