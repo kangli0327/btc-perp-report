@@ -964,7 +964,7 @@ function runSimDecision(state, market) {
     if (longReady) {
       const blockReason = canOpenSim(state, scores, "long", metrics);
       if (blockReason) {
-        decision = "风控禁止开仓";
+        decision = /VWAP|入场位置|不追|回踩|突破|跌破|反弹/.test(blockReason) ? "入场过滤未通过" : "风控禁止开仓";
         reason = blockReason;
       } else {
         reason = "多头确认分和预警分同向，且入场位置通过回踩/VWAP/突破过滤，开多试仓。";
@@ -974,7 +974,7 @@ function runSimDecision(state, market) {
     } else if (shortReady) {
       const blockReason = canOpenSim(state, scores, "short", metrics);
       if (blockReason) {
-        decision = "风控禁止开仓";
+        decision = /VWAP|入场位置|不追|回踩|突破|跌破|反弹/.test(blockReason) ? "入场过滤未通过" : "风控禁止开仓";
         reason = blockReason;
       } else {
         reason = "空头确认分和预警分同向，且入场位置通过反弹/VWAP/跌破过滤，开空试仓。";
@@ -983,7 +983,7 @@ function runSimDecision(state, market) {
       }
     }
   }
-  if (["观望", "风控禁止开仓"].includes(decision)) {
+  if (["观望", "风控禁止开仓", "入场过滤未通过"].includes(decision)) {
     const latestRecord = (state.records || [])[0];
     const shouldLog = !latestRecord
       || latestRecord.action !== decision
