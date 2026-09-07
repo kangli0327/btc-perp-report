@@ -22,6 +22,7 @@ const SIM_MIN_CONFIRM_SCORE = 68;
 const SIM_MIN_WARNING_SCORE = 58;
 const SIM_MIN_SCORE_EDGE = 16;
 const SIM_MAX_VWAP_CHASE_PCT = 0.65;
+const SIM_MIN_EXPECTED_RR = 1.8;
 const POLICY_CRYPTO_KEYWORDS = [
   "White House",
   "CFTC",
@@ -227,6 +228,10 @@ function closes(candles) {
   return (candles || []).map((item) => Number(item.close || 0)).filter((value) => Number.isFinite(value) && value > 0);
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function emaSeries(values, length) {
   if (!values.length) return [];
   const alpha = 2 / (length + 1);
@@ -309,6 +314,20 @@ function emaState(candles) {
   return "EMA震荡";
 }
 
+function emaSnapshot(candles) {
+  const values = closes(candles);
+  const latest = values[values.length - 1] || 0;
+  const e20Series = emaSeries(values, 20);
+  const e60Series = emaSeries(values, 60);
+  const e120Series = emaSeries(values, 120);
+  const e20 = e20Series[e20Series.length - 1] || 0;
+  const e60 = e60Series[e60Series.length - 1] || 0;
+  const e120 = e120Series[e120Series.length - 1] || 0;
+  const prev20 = e20Series[e20Series.length - 6] || e20;
+  const slope20Pct = latest ? (e20 / prev20 - 1) * 100 : 0;
+  return { e20, e60, e120, slope20Pct };
+}
+
 function higherLows(candles, count = 3) {
   const slice = (candles || []).slice(-count);
   return slice.length >= count && slice.every((item, index) => index === 0 || item.low > slice[index - 1].low);
@@ -329,6 +348,10 @@ function buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, source) 
   const resistance = supportWindow.length ? Math.max(...supportWindow.map((item) => item.high || latest)) : latest * 1.005;
   const vwap24h = vwap(recent24h);
   const atr15m = atr(c15);
+  const ema15m = emaSnapshot(c15);
+  const ema1h = emaSnapshot(c1h);
+  const ema4hSnapshot = emaSnapshot(c4h);
+  const previous15 = c15[c15.length - 2] || null;
   const metrics = {
     latest,
     support,
@@ -340,11 +363,18 @@ function buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, source) 
     macd1h: macd(closes1h),
     macd4h: macd(closes4h),
     ema4h: emaState(c4h),
+    ema15m,
+    ema1h,
+    ema4hSnapshot,
     volumeRatio15m: volumeRatio(c15),
     volumeRatio1h: volumeRatio(c1h),
     atr15m,
+    atrPct: latest ? atr15m / latest * 100 : 0,
     vwap24h,
     priceVsVwapPct: vwap24h ? (latest / vwap24h - 1) * 100 : 0,
+    rangePct: latest ? (resistance - support) / latest * 100 : 0,
+    previous15High: previous15?.high || 0,
+    previous15Low: previous15?.low || 0,
     funding,
     higherLows5m: higherLows(c5m),
     lowerHighs5m: lowerHighs(c5m),
@@ -558,25 +588,164 @@ function simScores(metrics) {
   };
 }
 
-function simSignalProfile(scores, side, state) {
+function simRangePosition(metrics) {
+  const support = Number(metrics.support || 0);
+  const resistance = Number(metrics.resistance || 0);
+  const latest = Number(metrics.latest || 0);
+  const width = resistance - support;
+  if (!latest || width <= 0) return 0.5;
+  return clamp((latest - support) / width, 0, 1);
+}
+
+function classifyMarketRegime(metrics, scores) {
+  const latest = Number(metrics.latest || 0);
+  const ema15 = metrics.ema15m || {};
+  const ema1h = metrics.ema1h || {};
+  const ema4h = metrics.ema4hSnapshot || {};
+  const longStructure = latest > Number(ema15.e20 || 0)
+    && Number(ema15.e20 || 0) >= Number(ema15.e60 || 0)
+    && latest > Number(ema1h.e20 || 0)
+    && Number(ema4h.slope20Pct || 0) >= 0;
+  const shortStructure = latest < Number(ema15.e20 || 0)
+    && Number(ema15.e20 || 0) <= Number(ema15.e60 || 0)
+    && latest < Number(ema1h.e20 || 0)
+    && Number(ema4h.slope20Pct || 0) <= 0;
+  const scoreEdge = Number(scores.longScore || 0) - Number(scores.shortScore || 0);
+  const rangePos = simRangePosition(metrics);
+  const nearMiddle = rangePos > 0.32 && rangePos < 0.68;
+  const lowTrendEdge = Math.abs(scoreEdge) < 12;
+  const controlledAtr = Number(metrics.atrPct || 0) <= 0.85;
+  if (longStructure && scoreEdge >= 8 && controlledAtr) {
+    return { code: "trend_up", label: "上升趋势", reason: "EMA结构向上，价格在VWAP上方，多头占优。" };
+  }
+  if (shortStructure && scoreEdge <= -8 && controlledAtr) {
+    return { code: "trend_down", label: "下降趋势", reason: "EMA结构向下，价格在VWAP下方，空头占优。" };
+  }
+  if (Number(metrics.rangePct || 0) >= 0.55 && lowTrendEdge && controlledAtr) {
+    return {
+      code: "range",
+      label: "震荡区间",
+      reason: nearMiddle ? "价格在区间中部，追单优势不明显。" : "价格靠近区间边缘，可以只看反转模型。",
+    };
+  }
+  return { code: "chop", label: "混沌行情", reason: "趋势、动能和位置没有形成统一优势。" };
+}
+
+function simSetupCandidate(metrics, regime, side, setupType, invalidPrice, targetPrices, reason, scores) {
+  const latest = Number(metrics.latest || 0);
+  const stop = Number(invalidPrice || 0);
+  const targets = (targetPrices || []).map(Number).filter((value) => Number.isFinite(value) && value > 0);
+  if (!latest || !stop || targets.length < 2) return null;
+  const risk = side === "long" ? latest - stop : stop - latest;
+  const reward = side === "long" ? targets[1] - latest : latest - targets[1];
+  if (risk <= 0 || reward <= 0) return null;
+  const riskPct = risk / latest * 100;
+  if (riskPct < 0.10 || riskPct > 1.35) return null;
+  const expectedRR = reward / risk;
+  const confirm = side === "long" ? scores.longScore : scores.shortScore;
+  const opposite = side === "long" ? scores.shortScore : scores.longScore;
+  const warning = side === "long" ? scores.longWarningScore : scores.shortWarningScore;
+  return {
+    side,
+    setupType,
+    entryReason: reason,
+    entryPriceZone: `${Math.round(latest - risk * 0.15)}-${Math.round(latest + risk * 0.15)}`,
+    invalidPrice: stop,
+    targetPrices: targets.slice(0, 3),
+    expectedRR,
+    riskPct,
+    confirm,
+    warning,
+    scoreEdge: confirm - opposite,
+    marketRegime: regime.code,
+    marketRegimeLabel: regime.label,
+  };
+}
+
+function detectBestSetup(metrics, scores, regime) {
+  const latest = Number(metrics.latest || 0);
+  const atrStep = Math.max(Number(metrics.atr15m || 0), latest * 0.0035);
+  const support = Number(metrics.support || 0);
+  const resistance = Number(metrics.resistance || 0);
+  const vwapValue = Number(metrics.vwap24h || 0);
+  const rangePos = simRangePosition(metrics);
+  const mid = support && resistance ? (support + resistance) / 2 : latest;
+  const psychUp = simPsychLevel(latest, "long");
+  const psychDown = simPsychLevel(latest, "short");
+  const candidates = [];
+  const add = (...args) => {
+    const candidate = simSetupCandidate(metrics, regime, ...args, scores);
+    if (candidate) candidates.push(candidate);
+  };
+  if (regime.code === "trend_up") {
+    const pullbackHeld = vwapValue > 0 && latest >= vwapValue && Math.abs(latest - vwapValue) <= atrStep * 0.9 && Number(metrics.macd15m.hist || 0) >= 0;
+    const breakout = resistance > 0 && latest > resistance && latest - resistance <= atrStep * 0.55 && Number(metrics.volumeRatio15m || 0) >= 1.12;
+    if (pullbackHeld) {
+      add("long", "趋势回踩多", Math.min(vwapValue, support || vwapValue) - atrStep * 0.35, [latest + atrStep * 1.4, Math.max(resistance, latest + atrStep * 2.2), Math.max(psychUp + 300, latest + atrStep * 3.1)], "上升趋势里回踩VWAP后重新走强，属于顺势低吸。");
+    }
+    if (breakout) {
+      add("long", "放量突破多", resistance - atrStep * 0.45, [latest + atrStep * 1.2, Math.max(psychUp + 300, latest + atrStep * 2.0), Math.max(psychUp + 700, latest + atrStep * 2.8)], "价格放量突破阻力，回到阻力下方才说明突破失败。");
+    }
+  } else if (regime.code === "trend_down") {
+    const reboundFailed = vwapValue > 0 && latest <= vwapValue && Math.abs(latest - vwapValue) <= atrStep * 0.9 && Number(metrics.macd15m.hist || 0) <= 0;
+    const breakdown = support > 0 && latest < support && support - latest <= atrStep * 0.55 && Number(metrics.volumeRatio15m || 0) >= 1.12;
+    if (reboundFailed) {
+      add("short", "趋势回踩空", Math.max(vwapValue, resistance || vwapValue) + atrStep * 0.35, [latest - atrStep * 1.4, Math.min(support, latest - atrStep * 2.2), Math.min(psychDown - 300, latest - atrStep * 3.1)], "下降趋势里反弹到VWAP附近受阻，属于顺势高空。");
+    }
+    if (breakdown) {
+      add("short", "放量突破空", support + atrStep * 0.45, [latest - atrStep * 1.2, Math.min(psychDown - 300, latest - atrStep * 2.0), Math.min(psychDown - 700, latest - atrStep * 2.8)], "价格放量跌破支撑，回到支撑上方才说明跌破失败。");
+    }
+  } else if (regime.code === "range") {
+    if (rangePos <= 0.24 && Number(metrics.rsi15m || 50) <= 48 && (metrics.higherLows5m || Number(metrics.macd15m.hist || 0) > 0)) {
+      add("long", "区间反转多", support - atrStep * 0.35, [mid, resistance - atrStep * 0.25, resistance + atrStep * 0.55], "价格靠近区间支撑，短线动能开始修复，只做轻仓反弹。");
+    }
+    if (rangePos >= 0.76 && Number(metrics.rsi15m || 50) >= 52 && (metrics.lowerHighs5m || Number(metrics.macd15m.hist || 0) < 0)) {
+      add("short", "区间反转空", resistance + atrStep * 0.35, [mid, support + atrStep * 0.25, support - atrStep * 0.55], "价格靠近区间阻力，短线动能转弱，只做轻仓回落。");
+    }
+  }
+  const filtered = candidates.filter((candidate) => {
+    if (candidate.expectedRR < SIM_MIN_EXPECTED_RR) return false;
+    if (candidate.side === "long") return scores.longScore >= scores.shortScore - 6 && scores.longWarningScore >= 38;
+    return scores.shortScore >= scores.longScore - 6 && scores.shortWarningScore >= 38;
+  });
+  filtered.sort((a, b) => (b.expectedRR + b.scoreEdge / 100) - (a.expectedRR + a.scoreEdge / 100));
+  if (filtered[0]) return filtered[0];
+  const reason = regime.code === "chop"
+    ? "混沌行情，不交易。"
+    : regime.code === "range" && rangePos > 0.24 && rangePos < 0.76
+      ? "震荡中间位，无优势，不开仓。"
+      : "暂时没有满足盈亏比和结构止损的交易模型。";
+  return { side: "flat", setupType: "无合格模型", expectedRR: 0, invalidPrice: 0, targetPrices: [], marketRegime: regime.code, marketRegimeLabel: regime.label, entryReason: reason };
+}
+
+function simRiskCheck(state, scores, setup) {
+  if (state.balanceCny < SIM_INITIAL_CNY * 0.7) return "模拟权益低于初始资金70%，进入保护模式，只允许平仓。";
+  if (!setup || setup.side === "flat") return setup?.entryReason || "没有合格交易模型。";
+  if (scores.riskScore >= 80) return "风险评分过高，禁止开新仓。";
+  if (Number(setup.expectedRR || 0) < SIM_MIN_EXPECTED_RR) return `预期盈亏比${Number(setup.expectedRR || 0).toFixed(2)}低于${SIM_MIN_EXPECTED_RR}，不开仓。`;
+  return "";
+}
+
+function simSignalProfile(scores, side, state, setup = null) {
   const confirm = side === "long" ? scores.longScore : scores.shortScore;
   const opposite = side === "long" ? scores.shortScore : scores.longScore;
   const warning = side === "long" ? scores.longWarningScore : scores.shortWarningScore;
   const edge = confirm - opposite;
-  let leverage = SIM_BASE_LEVERAGE;
-  let marginPct = SIM_BASE_MARGIN_PCT;
-  let lossPct = SIM_BASE_LOSS_PCT;
+  const rr = Number(setup?.expectedRR || 0);
+  let leverage = 12;
+  let marginPct = 0.05;
+  let lossPct = 0.012;
   let label = "普通信号";
-  if (confirm >= 78 && warning >= 72 && edge >= 20 && scores.riskScore <= 45) {
+  if (rr >= 2.2 && confirm >= 65 && warning >= 50 && edge >= 10 && scores.riskScore <= 55) {
+    leverage = 20;
+    marginPct = 0.08;
+    lossPct = 0.016;
+    label = "强信号";
+  }
+  if (rr >= 2.8 && confirm >= 74 && warning >= 58 && edge >= 16 && scores.riskScore <= 42) {
     leverage = SIM_STRONG_LEVERAGE;
     marginPct = 0.10;
     lossPct = 0.02;
-    label = "强信号";
-  }
-  if (confirm >= 88 && warning >= 82 && edge >= 28 && scores.riskScore <= 35) {
-    leverage = SIM_MAX_LEVERAGE;
-    marginPct = SIM_MAX_MARGIN_PCT;
-    lossPct = SIM_MAX_LOSS_PCT;
     label = "极强信号";
   }
   const lastClosed = (state.records || []).find((record) => ["止盈平仓", "止损平仓", "反向信号平仓"].includes(record.action));
@@ -590,7 +759,7 @@ function simSignalProfile(scores, side, state) {
     lossPct = Math.min(lossPct, 0.012);
     label += "，风险降档";
   }
-  return { leverage, marginPct, lossPct, label, confirm, warning, edge };
+  return { leverage, marginPct, lossPct, label, confirm, warning, edge, expectedRR: rr, setupType: setup?.setupType || "" };
 }
 
 function simPsychLevel(price, side) {
@@ -599,7 +768,7 @@ function simPsychLevel(price, side) {
   return side === "long" ? Math.ceil(price / step) * step : Math.floor(price / step) * step;
 }
 
-function buildSimExitPlan(side, entryPrice, riskDistance, metrics = {}) {
+function buildSimExitPlan(side, entryPrice, riskDistance, metrics = {}, setup = null) {
   const latest = Number(entryPrice || metrics.latest || 0);
   const risk = Math.max(Number(riskDistance || 0), Number(metrics.atr15m || 0) * 1.2, latest * 0.004);
   const psych = simPsychLevel(latest, side);
@@ -630,6 +799,12 @@ function buildSimExitPlan(side, entryPrice, riskDistance, metrics = {}) {
       runnerTarget = Math.min(runnerTarget, psych - 800);
     }
     stopLoss = latest + risk;
+  }
+  if (setup?.targetPrices?.length >= 2 && Number(setup.invalidPrice || 0) > 0) {
+    stopLoss = Number(setup.invalidPrice);
+    tp1 = Number(setup.targetPrices[0]);
+    tp2 = Number(setup.targetPrices[1]);
+    runnerTarget = Number(setup.targetPrices[2] || setup.targetPrices[1]);
   }
   return {
     takeProfit: tp1,
@@ -712,6 +887,10 @@ function closeSimPosition(state, market, action, reason) {
     feeCny: closeFeeCny,
     pnlCny: netPnlCny,
     balanceCny: state.balanceCny,
+    marketRegime: position.marketRegime || "",
+    setupType: position.setupType || "",
+    expectedRR: position.expectedRR || 0,
+    invalidPrice: position.invalidPrice || position.stopLoss || 0,
     reason,
   });
   state.lastDecisionAt = new Date().toISOString();
@@ -758,6 +937,10 @@ function closeSimPartial(state, market, target, reason) {
     feeCny: closeFeeCny,
     pnlCny: netPnlCny,
     balanceCny: state.balanceCny,
+    marketRegime: position.marketRegime || "",
+    setupType: position.setupType || "",
+    expectedRR: position.expectedRR || 0,
+    invalidPrice: position.invalidPrice || position.stopLoss || 0,
     reason,
   });
   if (position.quantityBtc <= Math.max(0.0001, initialQty * 0.05)) {
@@ -812,17 +995,23 @@ function extendSimRunnerTarget(state, market, scores, reason) {
     feeCny: 0,
     pnlCny: 0,
     balanceCny: state.balanceCny,
+    marketRegime: position.marketRegime || "",
+    setupType: position.setupType || "",
+    expectedRR: position.expectedRR || 0,
+    invalidPrice: position.invalidPrice || position.stopLoss || 0,
     reason,
   });
   return true;
 }
 
-function openSimPosition(state, market, side, reason, scores) {
+function openSimPosition(state, market, setup, scores) {
   const latest = market.metrics.latest;
   const rate = market.rateInfo.rate;
   const equityCny = state.balanceCny;
-  const profile = simSignalProfile(scores, side, state);
-  const riskDistance = Math.max(market.metrics.atr15m * 1.2, latest * 0.004);
+  const side = setup.side;
+  const reason = setup.entryReason;
+  const profile = simSignalProfile(scores, side, state, setup);
+  const riskDistance = Math.max(Math.abs(latest - Number(setup.invalidPrice || 0)), market.metrics.atr15m * 0.5, latest * 0.001);
   const maxMarginCny = equityCny * profile.marginPct;
   const maxRiskUsdt = equityCny * profile.lossPct / rate;
   const qtyByRisk = maxRiskUsdt / riskDistance;
@@ -832,7 +1021,7 @@ function openSimPosition(state, market, side, reason, scores) {
   const marginUsdt = notionalUsdt / profile.leverage;
   const marginCny = marginUsdt * rate;
   const feeCny = notionalUsdt * SIM_FEE_RATE * rate;
-  const exitPlan = buildSimExitPlan(side, latest, riskDistance, market.metrics);
+  const exitPlan = buildSimExitPlan(side, latest, riskDistance, market.metrics, setup);
   state.balanceCny -= feeCny;
   state.position = {
     side,
@@ -850,8 +1039,14 @@ function openSimPosition(state, market, side, reason, scores) {
     runnerTarget: exitPlan.runnerTarget,
     breakoutLevel: exitPlan.breakoutLevel,
     breakoutMode: exitPlan.breakoutMode,
+    marketRegime: setup.marketRegimeLabel || setup.marketRegime || "",
+    setupType: setup.setupType,
+    expectedRR: setup.expectedRR,
+    entryPriceZone: setup.entryPriceZone,
+    invalidPrice: setup.invalidPrice,
+    targetPrices: setup.targetPrices,
     openedAt: new Date().toISOString(),
-    reason: `${reason} 杠杆${profile.leverage}x，${profile.label}，单笔风险上限约${(profile.lossPct * 100).toFixed(1)}%。采用分批止盈：第一档减${Math.round(SIM_TP1_CLOSE_PCT * 100)}%，第二档减${Math.round(SIM_TP2_CLOSE_PCT * 100)}%，剩余尾仓跟踪突破。`,
+    reason: `${reason} 模型：${setup.setupType}，预期盈亏比${Number(setup.expectedRR || 0).toFixed(2)}。杠杆${profile.leverage}x，${profile.label}，单笔风险上限约${(profile.lossPct * 100).toFixed(1)}%。采用分批止盈：第一档减${Math.round(SIM_TP1_CLOSE_PCT * 100)}%，第二档减${Math.round(SIM_TP2_CLOSE_PCT * 100)}%，剩余尾仓跟踪突破。`,
   };
   state.lastDecisionAt = new Date().toISOString();
   state.lastOpenSide = side;
@@ -864,6 +1059,10 @@ function openSimPosition(state, market, side, reason, scores) {
     feeCny,
     pnlCny: -feeCny,
     balanceCny: state.balanceCny,
+    marketRegime: setup.marketRegimeLabel || setup.marketRegime || "",
+    setupType: setup.setupType,
+    expectedRR: setup.expectedRR,
+    invalidPrice: setup.invalidPrice,
     reason: state.position.reason,
   });
 }
@@ -900,9 +1099,11 @@ function canOpenSim(state, scores, side, metrics) {
 function runSimDecision(state, market) {
   const metrics = market.metrics;
   const scores = simScores(metrics);
+  const marketRegime = classifyMarketRegime(metrics, scores);
+  const selectedSetup = detectBestSetup(metrics, scores, marketRegime);
   const rate = market.rateInfo.rate;
   let decision = "观望";
-  let reason = "多空确认分和预警分未形成同向优势，继续等待。";
+  let reason = selectedSetup.entryReason || marketRegime.reason;
   if (state.position) {
     const position = state.position;
     ensureSimExitPlan(position, market);
@@ -940,14 +1141,14 @@ function runSimDecision(state, market) {
         closeSimPosition(state, market, "止盈平仓", "价格触及开仓时锁定止盈，落袋为安。");
         decision = "止盈平仓";
         reason = "价格触及开仓时锁定止盈。";
-      } else if (position.side === "long" && scores.shortScore - scores.longScore >= 22 && scores.shortWarningScore >= 65) {
-        closeSimPosition(state, market, "反向信号平仓", "空头评分和预警明显反向，先退出多单。");
+      } else if (position.side === "long" && metrics.latest < Math.min(Number(position.invalidPrice || position.stopLoss || 0), Number(metrics.vwap24h || Infinity)) && scores.shortScore - scores.longScore >= 24 && scores.shortWarningScore >= 62) {
+        closeSimPosition(state, market, "反向结构平仓", "多单结构跌破，同时空头评分占优，退出多单。");
         decision = "反向信号平仓";
-        reason = "空头评分和预警明显反向。";
-      } else if (position.side === "short" && scores.longScore - scores.shortScore >= 22 && scores.longWarningScore >= 65) {
-        closeSimPosition(state, market, "反向信号平仓", "多头评分和预警明显反向，先退出空单。");
+        reason = "多单结构跌破，同时空头评分占优。";
+      } else if (position.side === "short" && metrics.latest > Math.max(Number(position.invalidPrice || position.stopLoss || 0), Number(metrics.vwap24h || 0)) && scores.longScore - scores.shortScore >= 24 && scores.longWarningScore >= 62) {
+        closeSimPosition(state, market, "反向结构平仓", "空单结构突破，同时多头评分占优，退出空单。");
         decision = "反向信号平仓";
-        reason = "多头评分和预警明显反向。";
+        reason = "空单结构突破，同时多头评分占优。";
       } else {
         decision = "持仓";
         if (position.breakoutMode && position.breakoutLevel) {
@@ -959,28 +1160,14 @@ function runSimDecision(state, market) {
     }
   }
   if (!state.position && !["止损平仓", "止盈平仓", "第一止盈减仓", "第二止盈减仓", "尾仓止盈", "尾仓平仓", "反向信号平仓"].includes(decision)) {
-    const longReady = scores.longScore >= SIM_MIN_CONFIRM_SCORE && scores.longWarningScore >= SIM_MIN_WARNING_SCORE && scores.longScore - scores.shortScore >= SIM_MIN_SCORE_EDGE;
-    const shortReady = scores.shortScore >= SIM_MIN_CONFIRM_SCORE && scores.shortWarningScore >= SIM_MIN_WARNING_SCORE && scores.shortScore - scores.longScore >= SIM_MIN_SCORE_EDGE;
-    if (longReady) {
-      const blockReason = canOpenSim(state, scores, "long", metrics);
-      if (blockReason) {
-        decision = /VWAP|入场位置|不追|回踩|突破|跌破|反弹/.test(blockReason) ? "入场过滤未通过" : "风控禁止开仓";
-        reason = blockReason;
-      } else {
-        reason = "多头确认分和预警分同向，且入场位置通过回踩/VWAP/突破过滤，开多试仓。";
-        openSimPosition(state, market, "long", reason, scores);
-        decision = "开多";
-      }
-    } else if (shortReady) {
-      const blockReason = canOpenSim(state, scores, "short", metrics);
-      if (blockReason) {
-        decision = /VWAP|入场位置|不追|回踩|突破|跌破|反弹/.test(blockReason) ? "入场过滤未通过" : "风控禁止开仓";
-        reason = blockReason;
-      } else {
-        reason = "空头确认分和预警分同向，且入场位置通过反弹/VWAP/跌破过滤，开空试仓。";
-        openSimPosition(state, market, "short", reason, scores);
-        decision = "开空";
-      }
+    const blockReason = simRiskCheck(state, scores, selectedSetup);
+    if (blockReason) {
+      decision = selectedSetup?.side === "flat" || /模型|盈亏比|中间位|混沌/.test(blockReason) ? "入场过滤未通过" : "风控禁止开仓";
+      reason = blockReason;
+    } else {
+      openSimPosition(state, market, selectedSetup, scores);
+      decision = selectedSetup.side === "long" ? "开多" : "开空";
+      reason = selectedSetup.entryReason;
     }
   }
   if (["观望", "风控禁止开仓", "入场过滤未通过"].includes(decision)) {
@@ -998,6 +1185,10 @@ function runSimDecision(state, market) {
         feeCny: 0,
         pnlCny: 0,
         balanceCny: state.balanceCny,
+        marketRegime: marketRegime.label,
+        setupType: selectedSetup?.setupType || "",
+        expectedRR: selectedSetup?.expectedRR || 0,
+        invalidPrice: selectedSetup?.invalidPrice || 0,
         reason,
       });
     }
@@ -1010,6 +1201,8 @@ function runSimDecision(state, market) {
     decision,
     reason,
     scores,
+    marketRegime,
+    selectedSetup,
     floatingPnlCny,
     equityCny,
     drawdownPct: state.maxEquityCny ? (equityCny / state.maxEquityCny - 1) * 100 : 0,
@@ -1062,6 +1255,8 @@ async function simBrief(request, env) {
       decision: result.decision,
       decisionReason: result.reason,
       scores: result.scores,
+      marketRegime: result.marketRegime,
+      selectedSetup: result.selectedSetup,
       position: state.position,
       records: (state.records || []).slice(0, 100),
       market: {
@@ -1087,6 +1282,7 @@ async function simBrief(request, env) {
         observationLogIntervalMinutes: SIM_COOLDOWN_MS / 60000,
         timeCooldownRemoved: true,
         backgroundCron: "*/5 * * * *",
+        minExpectedRR: SIM_MIN_EXPECTED_RR,
         minConfirmScore: SIM_MIN_CONFIRM_SCORE,
         minWarningScore: SIM_MIN_WARNING_SCORE,
         minScoreEdge: SIM_MIN_SCORE_EDGE,

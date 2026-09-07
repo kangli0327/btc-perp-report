@@ -433,13 +433,15 @@ def render_report(
         <div class="sim-card"><div class="label">持仓数量</div><div class="value" id="simPositionQty">等待刷新</div></div>
         <div class="sim-card"><div class="label">开仓 / 标记</div><div class="value" id="simEntryMark">等待刷新</div></div>
         <div class="sim-card"><div class="label">止盈 / 止损</div><div class="value" id="simTpSl">等待刷新</div></div>
+        <div class="sim-card"><div class="label">行情类型</div><div class="value" id="simRegime">等待刷新</div></div>
+        <div class="sim-card"><div class="label">交易模型 / RR</div><div class="value" id="simSetup">等待刷新</div></div>
       </div>
       <p class="small" id="simDecision">等待模拟盘刷新。</p>
       <p class="small" id="simStatus">状态：未连接</p>
       <div class="sim-records">
         <table>
-          <thead><tr><th>时间</th><th>动作</th><th>方向</th><th>价格</th><th>数量BTC</th><th>保证金</th><th>手续费</th><th>盈亏</th><th>余额</th><th>理由</th></tr></thead>
-          <tbody id="simRecords"><tr><td colspan="10">等待模拟盘记录。</td></tr></tbody>
+          <thead><tr><th>时间</th><th>动作</th><th>方向</th><th>价格</th><th>数量BTC</th><th>保证金</th><th>手续费</th><th>盈亏</th><th>余额</th><th>行情</th><th>模型/RR</th><th>结构止损</th><th>理由</th></tr></thead>
+          <tbody id="simRecords"><tr><td colspan="13">等待模拟盘记录。</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -1746,6 +1748,12 @@ def render_report(
       setText('simPositionQty', p ? Number(p.quantityBtc || 0).toFixed(4) : '0');
       setText('simEntryMark', p ? `${{fmtPrice(Number(p.entryPrice || 0))}} / ${{fmtPrice(Number(payload.market?.latest || 0))}}` : `- / ${{fmtPrice(Number(payload.market?.latest || 0))}}`);
       setText('simTpSl', simTpSlText(p));
+      setText('simRegime', payload.marketRegime?.label || p?.marketRegime || '-');
+      const setup = payload.selectedSetup || p || {{}};
+      const setupText = setup.setupType && setup.setupType !== '无合格模型'
+        ? `${{setup.setupType}} / RR ${{Number(setup.expectedRR || 0).toFixed(2)}}`
+        : (setup.entryReason || '暂无合格模型');
+      setText('simSetup', setupText);
       setText('simDecision', `本次决策：${{payload.decision || '等待'}} · ${{payload.decisionReason || '-'}}`);
       const simSourceText = payload.market?.source || payload.marketSource || '模拟行情';
       const simWarningText = payload.sourceWarning || payload.market?.sourceWarning || '';
@@ -1768,8 +1776,11 @@ def render_report(
             <td>${{fmtCny(Number(record.feeCny || 0))}}</td>
             <td class="${{simPnlClass(record.pnlCny)}}">${{Number(record.pnlCny || 0) >= 0 ? '+' : ''}}${{fmtCny(Number(record.pnlCny || 0))}}</td>
             <td>${{fmtCny(Number(record.balanceCny || 0))}}</td>
+            <td>${{record.marketRegime || '-'}}</td>
+            <td>${{record.setupType ? record.setupType + ' / RR ' + Number(record.expectedRR || 0).toFixed(2) : '-'}}</td>
+            <td>${{record.invalidPrice ? fmtPrice(Number(record.invalidPrice)) : '-'}}</td>
             <td>${{record.reason || '-'}}</td>
-          </tr>`).join('') : '<tr><td colspan="10">暂无模拟盘记录。</td></tr>';
+          </tr>`).join('') : '<tr><td colspan="13">暂无模拟盘记录。</td></tr>';
       }}
     }}
     async function refreshSim(reason = 'sim-refresh') {{
