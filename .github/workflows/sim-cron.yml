@@ -18,5 +18,20 @@ jobs:
     steps:
       - name: Advance simulation account
         run: |
-          curl --fail --silent --show-error --retry 3 --retry-delay 10 --retry-all-errors --max-time 60 \
+          curl --fail --silent --show-error --retry 5 --retry-delay 12 --retry-all-errors --max-time 120 \
+            --output /tmp/sim.json \
             "https://btc-account.kangli0327-btc.workers.dev/sim?trigger=github-cron&ts=$(date +%s)"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("/tmp/sim.json").read_text())
+          if not payload.get("ok"):
+              raise SystemExit(payload.get("error", "simulation worker returned ok=false"))
+          print(
+              "sim ok:",
+              payload.get("decision"),
+              payload.get("decisionReason", "")[:120],
+              "mode=", payload.get("riskRules", {}).get("mode"),
+          )
+          PY
