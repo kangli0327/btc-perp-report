@@ -147,13 +147,13 @@ def _source_health(url: str, source: str, warnings: list[str]) -> None:
 def _curated_events() -> list[MacroEvent]:
     return [
         MacroEvent(
-            title="美联储9月FOMC利率决议观察窗口",
+            title="美联储9月15-16日FOMC议息观察窗口",
             source="Federal Reserve FOMC日程",
             url=FED_URL,
-            scheduled_at=datetime(2026, 9, 15, 14, 0, tzinfo=ET),
+            scheduled_at=datetime(2026, 9, 14, 20, 0, tzinfo=ET),
             impact="高",
             btc_view="重点看是否维持利率不变、点阵图和鲍威尔措辞。意外加息会明显压制风险资产；维持不变但释放降息信号则偏利多BTC。",
-            expected="市场预期：重点关注是否维持利率不变，以及后续降息路径是否更清晰。",
+            expected="议息观察窗口开始；市场预期重点关注是否维持利率不变，以及后续降息路径是否更清晰。",
             previous="前值：上次会议维持政策利率不变，市场继续围绕降息时点交易。",
             my_forecast="我的判断：基准情形是维持不变；真正影响BTC的是声明和鲍威尔讲话是否偏鸽派。",
             btc_direction="BTC方向：维持不变且偏鸽，偏利多BTC；维持不变但措辞鹰派，偏利空BTC；若意外加息，短线明显利空BTC。",
