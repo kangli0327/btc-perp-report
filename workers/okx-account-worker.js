@@ -3,6 +3,7 @@ const BYBIT_BASE = "https://api.bybit.com";
 const BINANCE_FAPI_BASE = "https://fapi.binance.com";
 const FALLBACK_CNY_RATE = 7.2;
 const TE_BASE = "https://api.tradingeconomics.com";
+const UPCOMING_MACRO_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const FREE_MACRO_SOURCE = "official-free";
 const SIM_KV_KEY = "SIM_ACCOUNT_STATE_V1";
@@ -1364,6 +1365,20 @@ function officialMacroEvents(now) {
       btcDirection: "中性偏利多BTC：通胀和核心通胀继续降温，但仍高于长期目标，追多需要看美元和美债是否配合。",
     },
     {
+      title: "美联储9月FOMC利率决议观察窗口",
+      country: "US",
+      category: "FOMC",
+      type: "美联储",
+      scheduledAt: "2026-09-15T18:00:00.000Z",
+      impact: "高",
+      forecast: "市场重点关注是否维持利率不变、点阵图和鲍威尔对后续路径的表态。",
+      previous: "上次会议维持政策利率不变，市场继续交易后续降息/维持高利率路径。",
+      actual: "",
+      status: "待公布",
+      source: "Federal Reserve FOMC日程",
+      btcDirection: "待公布：若维持不变但释放降息信号，偏利多BTC；若维持不变且措辞鹰派，偏利空BTC；若意外加息，短线明显利空BTC。",
+    },
+    {
       title: "美国8月CPI通胀数据",
       country: "US",
       category: "Inflation",
@@ -1379,7 +1394,7 @@ function officialMacroEvents(now) {
     },
   ].filter((event) => {
     const t = new Date(event.scheduledAt);
-    const until = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const until = new Date(now.getTime() + UPCOMING_MACRO_WINDOW_MS);
     const recentFrom = new Date(now.getTime() - RECENT_MACRO_KEEP_MS);
     return (t >= now && t <= until) || (event.status === "已公布" && t >= recentFrom && t <= now);
   });
@@ -1409,7 +1424,7 @@ function policyCryptoEvents(now) {
     },
   ].filter((event) => {
     const t = new Date(event.scheduledAt);
-    const until = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const until = new Date(now.getTime() + UPCOMING_MACRO_WINDOW_MS);
     const recentFrom = new Date(now.getTime() - RECENT_MACRO_KEEP_MS);
     return (t >= now && t <= until) || (event.status === "已公布" && t >= recentFrom && t <= now);
   });
@@ -1429,7 +1444,7 @@ function dedupeMacroEvents(events) {
 
 async function macroBrief(request, env) {
   const now = new Date();
-  const until = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const until = new Date(now.getTime() + UPCOMING_MACRO_WINDOW_MS);
   const recentFrom = new Date(now.getTime() - RECENT_MACRO_KEEP_MS);
   const warnings = [];
   let events = [];
@@ -1469,7 +1484,7 @@ async function macroBrief(request, env) {
   let visibleEvents = [...upcomingEvents, ...recentReleasedEvents].slice(0, 12);
   if (!visibleEvents.length) {
     visibleEvents = [{
-      title: "未来24小时暂无已接入的高影响宏观事件",
+      title: "未来7天暂无已接入的高影响宏观事件",
       placeholder: true,
       country: "US",
       category: "Macro",
@@ -1499,6 +1514,7 @@ async function macroBrief(request, env) {
       officialFallbackActive: true,
       freeOfficialMode: !env.TRADING_ECONOMICS_KEY,
       recentKeepHours: RECENT_MACRO_KEEP_MS / (60 * 60 * 1000),
+      upcomingWindowHours: UPCOMING_MACRO_WINDOW_MS / (60 * 60 * 1000),
       policyCryptoKeywords: POLICY_CRYPTO_KEYWORDS,
     },
   });

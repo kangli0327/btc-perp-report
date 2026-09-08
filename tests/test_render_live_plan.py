@@ -32,6 +32,8 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("macroEventsList", source)
         self.assertIn("recentMacroEventsList", source)
         self.assertIn("macroWarnings", source)
+        self.assertIn("未来7天宏观事件", source)
+        self.assertIn("未来7天", source)
         self.assertIn("最近7天关键消息", source)
         self.assertIn("function sprintStageForCny", source)
         self.assertIn("applySprintStageFromEquity", source)

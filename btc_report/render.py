@@ -77,7 +77,7 @@ def render_report(
         + (f"<br><span class=\"small\"><strong>BTC方向：</strong>{html.escape(event.btc_direction)}</span>" if event.btc_direction else "")
         + "</li>"
         for event in macro_brief.events
-    ) or "<li>未来24小时未识别到已接入日历中的高影响事件。</li>"
+    ) or "<li>未来7天未识别到已接入日历中的高影响事件。</li>"
 
     has_short = position.short.quantity_btc > 0
     has_long = position.long.quantity_btc > 0
@@ -401,7 +401,7 @@ def render_report(
     </section>
 
     <section id="macroSection">
-      <h2>未来24小时宏观事件</h2>
+      <h2>未来7天宏观事件</h2>
       <p id="macroSummary">{html.escape(macro_brief.summary)}</p>
       <p><strong>BTC波动预测：</strong><span id="macroForecast">{html.escape(macro_brief.forecast)}</span></p>
       <p class="small" id="macroWindow">窗口：{macro_brief.window_start:%Y-%m-%d %H:%M} - {macro_brief.window_end:%Y-%m-%d %H:%M} 北京时间</p>
@@ -1822,12 +1822,12 @@ def render_report(
         const recent = (payload.recentReleasedEvents || []).filter(event => !event.placeholder);
         const warnings = payload.warnings || [];
         const macroMode = payload.macroStatus && payload.macroStatus.freeOfficialMode ? '免费官方源' : payload.source;
-        setText('macroSummary', `未来24小时 ${{upcoming.length}} 个；最近7天关键消息 ${{recent.length}} 个；数据源：${{macroMode}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
+        setText('macroSummary', `未来7天 ${{upcoming.length}} 个；最近7天关键消息 ${{recent.length}} 个；数据源：${{macroMode}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
         setText('macroForecast', v5MacroDirectionSummary(recent.length ? recent : upcoming.length ? upcoming : events));
         setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布关键数据保留7天`);
         setText('macroWarnings', warnings.length ? `数据源状态：${{warnings.join('；')}}` : `数据源状态：${{macroMode}}正常`);
         const list = document.getElementById('macroEventsList');
-        if (list) list.innerHTML = upcoming.length ? upcoming.map(renderMacroEvent).join('') : '<li>未来24小时暂无已接入的高影响宏观事件。</li>';
+        if (list) list.innerHTML = upcoming.length ? upcoming.map(renderMacroEvent).join('') : '<li>未来7天暂无已接入的高影响宏观事件。</li>';
         const recentList = document.getElementById('recentMacroEventsList');
         if (recentList) recentList.innerHTML = recent.length ? recent.map(renderMacroEvent).join('') : '<li>最近7天暂无已接入的关键消息。</li>';
       }} catch (error) {{

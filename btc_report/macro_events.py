@@ -147,6 +147,18 @@ def _source_health(url: str, source: str, warnings: list[str]) -> None:
 def _curated_events() -> list[MacroEvent]:
     return [
         MacroEvent(
+            title="美联储9月FOMC利率决议观察窗口",
+            source="Federal Reserve FOMC日程",
+            url=FED_URL,
+            scheduled_at=datetime(2026, 9, 15, 14, 0, tzinfo=ET),
+            impact="高",
+            btc_view="重点看是否维持利率不变、点阵图和鲍威尔措辞。意外加息会明显压制风险资产；维持不变但释放降息信号则偏利多BTC。",
+            expected="市场预期：重点关注是否维持利率不变，以及后续降息路径是否更清晰。",
+            previous="前值：上次会议维持政策利率不变，市场继续围绕降息时点交易。",
+            my_forecast="我的判断：基准情形是维持不变；真正影响BTC的是声明和鲍威尔讲话是否偏鸽派。",
+            btc_direction="BTC方向：维持不变且偏鸽，偏利多BTC；维持不变但措辞鹰派，偏利空BTC；若意外加息，短线明显利空BTC。",
+        ),
+        MacroEvent(
             title="美国6月非农就业报告：非农、失业率、平均时薪、初请失业金",
             source="美国劳工统计局 / 交易经济网站 / Kiplinger经济日历",
             url=BLS_EMPSIT_URL,
@@ -238,7 +250,7 @@ def _analysis_for_event(event: MacroEvent) -> MacroEvent:
 
 def build_macro_brief(generated_at: datetime) -> MacroBrief:
     start = generated_at.astimezone(CN_TZ)
-    end = start + timedelta(hours=24)
+    end = start + timedelta(days=7)
     warnings: list[str] = []
     events: list[MacroEvent] = []
     try:
@@ -274,10 +286,10 @@ def build_macro_brief(generated_at: datetime) -> MacroBrief:
             directional = next((event for event in deduped if "就业形势" in event.title), None)
         if directional is None:
             directional = next((event for event in deduped if event.btc_direction), deduped[0])
-        summary = f"未来24小时识别到 {len(deduped)} 个宏观事件，其中 {high_count} 个为高/中高影响。重点关注：{directional.title}。"
+        summary = f"未来7天识别到 {len(deduped)} 个宏观事件，其中 {high_count} 个为高/中高影响。重点关注：{directional.title}。"
         forecast = directional.btc_direction or "事件窗口内 BTC 可能放大波动；高杠杆短线仓位应提前设置止损，避免在数据公布前后追单。"
     else:
-        summary = "未来24小时未在已接入官方日历中识别到高影响宏观事件。"
+        summary = "未来7天未在已接入官方日历中识别到高影响宏观事件。"
         forecast = "若无临时新闻冲击，BTC 短线更可能由技术位、资金费率、持仓拥挤和美元流动性预期驱动。"
 
     return MacroBrief(start, end, deduped[:8], summary, forecast, warnings)
