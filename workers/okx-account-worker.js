@@ -8,22 +8,25 @@ const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const FREE_MACRO_SOURCE = "official-free";
 const SIM_KV_KEY = "SIM_ACCOUNT_STATE_V1";
 const SIM_INITIAL_CNY = 50000;
-const SIM_BASE_LEVERAGE = 20;
-const SIM_STRONG_LEVERAGE = 30;
-const SIM_MAX_LEVERAGE = 50;
+const SIM_TARGET_CNY = 100000;
+const SIM_SPRINT_DAYS = 7;
+const SIM_BASE_LEVERAGE = 35;
+const SIM_STRONG_LEVERAGE = 60;
+const SIM_MAX_LEVERAGE = 100;
 const SIM_FEE_RATE = 0.0005;
-const SIM_BASE_MARGIN_PCT = 0.08;
-const SIM_MAX_MARGIN_PCT = 0.12;
-const SIM_BASE_LOSS_PCT = 0.015;
-const SIM_MAX_LOSS_PCT = 0.025;
-const SIM_COOLDOWN_MS = 15 * 60 * 1000;
-const SIM_TP1_CLOSE_PCT = 0.35;
-const SIM_TP2_CLOSE_PCT = 0.35;
+const SIM_BASE_MARGIN_PCT = 0.18;
+const SIM_MAX_MARGIN_PCT = 0.35;
+const SIM_BASE_LOSS_PCT = 0.04;
+const SIM_MAX_LOSS_PCT = 0.08;
+const SIM_BLOWUP_RESTART_CNY = 500;
+const SIM_COOLDOWN_MS = 5 * 60 * 1000;
+const SIM_TP1_CLOSE_PCT = 0.25;
+const SIM_TP2_CLOSE_PCT = 0.25;
 const SIM_MIN_CONFIRM_SCORE = 68;
 const SIM_MIN_WARNING_SCORE = 58;
 const SIM_MIN_SCORE_EDGE = 16;
 const SIM_MAX_VWAP_CHASE_PCT = 0.65;
-const SIM_MIN_EXPECTED_RR = 1.8;
+const SIM_MIN_EXPECTED_RR = 1.35;
 const POLICY_CRYPTO_KEYWORDS = [
   "White House",
   "CFTC",
@@ -339,10 +342,19 @@ function lowerHighs(candles, count = 3) {
   return slice.length >= count && slice.every((item, index) => index === 0 || item.high < slice[index - 1].high);
 }
 
-function buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, source) {
+function candleChangePct(candles, count = 3) {
+  const slice = (candles || []).slice(-count - 1);
+  const first = Number(slice[0]?.close || 0);
+  const last = Number(slice[slice.length - 1]?.close || 0);
+  return first ? (last / first - 1) * 100 : 0;
+}
+
+function buildSimMetrics(c15, c1h, c4h, c5m, c1m, latest, funding, rateInfo, source) {
   const closes15 = closes(c15);
   const closes1h = closes(c1h);
   const closes4h = closes(c4h);
+  const closes5m = closes(c5m);
+  const closes1m = closes(c1m);
   const recent24h = c15.slice(-96);
   const supportWindow = c15.slice(-24);
   const support = supportWindow.length ? Math.min(...supportWindow.map((item) => item.low || latest)) : latest * 0.995;
@@ -360,14 +372,19 @@ function buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, source) 
     rsi15m: rsi(closes15),
     rsi1h: rsi(closes1h),
     rsi4h: rsi(closes4h),
+    rsi5m: rsi(closes5m),
+    rsi1m: rsi(closes1m),
     macd15m: macd(closes15),
     macd1h: macd(closes1h),
     macd4h: macd(closes4h),
+    macd5m: macd(closes5m),
     ema4h: emaState(c4h),
     ema15m,
     ema1h,
     ema4hSnapshot,
     volumeRatio15m: volumeRatio(c15),
+    volumeRatio5m: volumeRatio(c5m),
+    volumeRatio1m: volumeRatio(c1m),
     volumeRatio1h: volumeRatio(c1h),
     atr15m,
     atrPct: latest ? atr15m / latest * 100 : 0,
@@ -377,19 +394,24 @@ function buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, source) 
     previous15High: previous15?.high || 0,
     previous15Low: previous15?.low || 0,
     funding,
+    change1mPct: candleChangePct(c1m, 3),
+    change5mPct: candleChangePct(c5m, 3),
     higherLows5m: higherLows(c5m),
     lowerHighs5m: lowerHighs(c5m),
+    higherLows1m: higherLows(c1m),
+    lowerHighs1m: lowerHighs(c1m),
   };
   return { metrics, rateInfo, source, updatedAt: new Date().toISOString() };
 }
 
 async function okxSimMarketSnapshot() {
-  const [markData, c15Rows, c1hRows, c4hRows, c5Rows, fundingRows, rateInfo] = await Promise.all([
+  const [markData, c15Rows, c1hRows, c4hRows, c5Rows, c1Rows, fundingRows, rateInfo] = await Promise.all([
     okxPublic("/api/v5/public/mark-price?instType=SWAP&instId=BTC-USDT-SWAP", 2),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=15m&limit=160", 10),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=160", 30),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=160", 60),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=80", 10),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1m&limit=80", 10),
     okxPublicOptional("/api/v5/public/funding-rate?instId=BTC-USDT-SWAP", [{ fundingRate: 0 }], 120),
     cnyRate(),
   ]);
@@ -397,46 +419,51 @@ async function okxSimMarketSnapshot() {
   const c1h = c1hRows.map(okxCandle).reverse();
   const c4h = c4hRows.map(okxCandle).reverse();
   const c5m = c5Rows.map(okxCandle).reverse();
+  const c1m = c1Rows.map(okxCandle).reverse();
   const latest = Number(markData[0]?.markPx || c15[c15.length - 1]?.close || 0);
   const funding = Number(fundingRows[0]?.fundingRate || 0) * 100;
-  return buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, "OKX公共行情");
+  return buildSimMetrics(c15, c1h, c4h, c5m, c1m, latest, funding, rateInfo, "OKX公共行情");
 }
 
 async function binanceSimMarketSnapshot() {
-  const [premium, c15Rows, c1hRows, c4hRows, c5Rows, rateInfo] = await Promise.all([
+  const [premium, c15Rows, c1hRows, c4hRows, c5Rows, c1Rows, rateInfo] = await Promise.all([
     binancePublic("/fapi/v1/premiumIndex?symbol=BTCUSDT", 2),
     binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=15m&limit=160", 10),
     binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=160", 30),
     binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=160", 60),
     binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=80", 10),
+    binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=80", 10),
     cnyRate(),
   ]);
   const c15 = c15Rows.map(binanceCandle);
   const c1h = c1hRows.map(binanceCandle);
   const c4h = c4hRows.map(binanceCandle);
   const c5m = c5Rows.map(binanceCandle);
+  const c1m = c1Rows.map(binanceCandle);
   const latest = Number(premium.markPrice || c15[c15.length - 1]?.close || 0);
   const funding = Number(premium.lastFundingRate || 0) * 100;
-  return buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, "Binance USD-M备用行情");
+  return buildSimMetrics(c15, c1h, c4h, c5m, c1m, latest, funding, rateInfo, "Binance USD-M备用行情");
 }
 
 async function bybitSimMarketSnapshot() {
-  const [ticker, c15Data, c1hData, c4hData, c5Data, rateInfo] = await Promise.all([
+  const [ticker, c15Data, c1hData, c4hData, c5Data, c1Data, rateInfo] = await Promise.all([
     bybitPublic("/v5/market/tickers?category=linear&symbol=BTCUSDT", 2),
     bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=15&limit=160", 10),
     bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=160", 30),
     bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=240&limit=160", 60),
     bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=5&limit=80", 10),
+    bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=1&limit=80", 10),
     cnyRate(),
   ]);
   const c15 = (c15Data.list || []).map(bybitCandle).reverse();
   const c1h = (c1hData.list || []).map(bybitCandle).reverse();
   const c4h = (c4hData.list || []).map(bybitCandle).reverse();
   const c5m = (c5Data.list || []).map(bybitCandle).reverse();
+  const c1m = (c1Data.list || []).map(bybitCandle).reverse();
   const item = (ticker.list || [])[0] || {};
   const latest = Number(item.markPrice || item.lastPrice || c15[c15.length - 1]?.close || 0);
   const funding = Number(item.fundingRate || 0) * 100;
-  return buildSimMetrics(c15, c1h, c4h, c5m, latest, funding, rateInfo, "Bybit线性合约备用行情");
+  return buildSimMetrics(c15, c1h, c4h, c5m, c1m, latest, funding, rateInfo, "Bybit线性合约备用行情");
 }
 
 async function simMarketSnapshot() {
@@ -511,6 +538,9 @@ function emptySimState(now = new Date()) {
     totalTrades: 0,
     winTrades: 0,
     lossStreak: 0,
+    resetCount: 0,
+    sprintTargetCny: SIM_TARGET_CNY,
+    sprintDays: SIM_SPRINT_DAYS,
     pauseUntil: null,
     lastDecisionAt: null,
     lastOpenSide: null,
@@ -578,6 +608,10 @@ function simScores(metrics) {
   if (metrics.lowerHighs5m) shortWarningScore += 22;
   if (metrics.latest > metrics.vwap24h && metrics.macd15m.hist > 0) longWarningScore += 24;
   if (metrics.latest < metrics.vwap24h && metrics.macd15m.hist < 0) shortWarningScore += 24;
+  if (metrics.change1mPct > 0.08 && metrics.volumeRatio1m > 1.25) longWarningScore += 14;
+  if (metrics.change1mPct < -0.08 && metrics.volumeRatio1m > 1.25) shortWarningScore += 14;
+  if (metrics.change5mPct > 0.16 && metrics.volumeRatio5m > 1.15) longWarningScore += 10;
+  if (metrics.change5mPct < -0.16 && metrics.volumeRatio5m > 1.15) shortWarningScore += 10;
   if (metrics.latest > metrics.resistance - metrics.atr15m * 0.25) longWarningScore += 10;
   if (metrics.latest < metrics.support + metrics.atr15m * 0.25) shortWarningScore += 10;
   return {
@@ -621,6 +655,12 @@ function classifyMarketRegime(metrics, scores) {
   }
   if (shortStructure && scoreEdge <= -8 && controlledAtr) {
     return { code: "trend_down", label: "下降趋势", reason: "EMA结构向下，价格在VWAP下方，空头占优。" };
+  }
+  if (latest > Number(metrics.vwap24h || 0) && Number(metrics.change1mPct || 0) > 0.10 && Number(metrics.volumeRatio1m || 0) >= 1.3) {
+    return { code: "momentum_up", label: "短线动量向上", reason: "1分钟放量上冲且站在VWAP上方，进入冲刺试多观察。" };
+  }
+  if (latest < Number(metrics.vwap24h || Infinity) && Number(metrics.change1mPct || 0) < -0.10 && Number(metrics.volumeRatio1m || 0) >= 1.3) {
+    return { code: "momentum_down", label: "短线动量向下", reason: "1分钟放量下杀且跌在VWAP下方，进入冲刺试空观察。" };
   }
   if (Number(metrics.rangePct || 0) >= 0.55 && lowTrendEdge && controlledAtr) {
     return {
@@ -678,23 +718,41 @@ function detectBestSetup(metrics, scores, regime) {
     const candidate = simSetupCandidate(metrics, regime, ...args, scores);
     if (candidate) candidates.push(candidate);
   };
-  if (regime.code === "trend_up") {
+  if (regime.code === "trend_up" || regime.code === "momentum_up") {
     const pullbackHeld = vwapValue > 0 && latest >= vwapValue && Math.abs(latest - vwapValue) <= atrStep * 0.9 && Number(metrics.macd15m.hist || 0) >= 0;
     const breakout = resistance > 0 && latest > resistance && latest - resistance <= atrStep * 0.55 && Number(metrics.volumeRatio15m || 0) >= 1.12;
+    const earlyImpulse = resistance > 0
+      && latest >= resistance - atrStep * 0.85
+      && latest <= resistance + atrStep * 0.75
+      && Number(metrics.change1mPct || 0) > 0.06
+      && Number(metrics.volumeRatio1m || 0) >= 1.15
+      && (metrics.higherLows1m || metrics.higherLows5m);
     if (pullbackHeld) {
       add("long", "趋势回踩多", Math.min(vwapValue, support || vwapValue) - atrStep * 0.35, [latest + atrStep * 1.4, Math.max(resistance, latest + atrStep * 2.2), Math.max(psychUp + 300, latest + atrStep * 3.1)], "上升趋势里回踩VWAP后重新走强，属于顺势低吸。");
     }
     if (breakout) {
       add("long", "放量突破多", resistance - atrStep * 0.45, [latest + atrStep * 1.2, Math.max(psychUp + 300, latest + atrStep * 2.0), Math.max(psychUp + 700, latest + atrStep * 2.8)], "价格放量突破阻力，回到阻力下方才说明突破失败。");
     }
-  } else if (regime.code === "trend_down") {
+    if (earlyImpulse) {
+      add("long", "冲刺动量多", Math.min(vwapValue || latest, support || latest, latest - atrStep * 0.55), [Math.max(resistance, latest + atrStep * 0.9), Math.max(psychUp + 160, latest + atrStep * 1.7), Math.max(psychUp + 520, latest + atrStep * 2.6)], "短线放量接近突破位，冲刺模式允许提前试多。");
+    }
+  } else if (regime.code === "trend_down" || regime.code === "momentum_down") {
     const reboundFailed = vwapValue > 0 && latest <= vwapValue && Math.abs(latest - vwapValue) <= atrStep * 0.9 && Number(metrics.macd15m.hist || 0) <= 0;
     const breakdown = support > 0 && latest < support && support - latest <= atrStep * 0.55 && Number(metrics.volumeRatio15m || 0) >= 1.12;
+    const earlyImpulse = support > 0
+      && latest <= support + atrStep * 0.85
+      && latest >= support - atrStep * 0.75
+      && Number(metrics.change1mPct || 0) < -0.06
+      && Number(metrics.volumeRatio1m || 0) >= 1.15
+      && (metrics.lowerHighs1m || metrics.lowerHighs5m);
     if (reboundFailed) {
       add("short", "趋势回踩空", Math.max(vwapValue, resistance || vwapValue) + atrStep * 0.35, [latest - atrStep * 1.4, Math.min(support, latest - atrStep * 2.2), Math.min(psychDown - 300, latest - atrStep * 3.1)], "下降趋势里反弹到VWAP附近受阻，属于顺势高空。");
     }
     if (breakdown) {
       add("short", "放量突破空", support + atrStep * 0.45, [latest - atrStep * 1.2, Math.min(psychDown - 300, latest - atrStep * 2.0), Math.min(psychDown - 700, latest - atrStep * 2.8)], "价格放量跌破支撑，回到支撑上方才说明跌破失败。");
+    }
+    if (earlyImpulse) {
+      add("short", "冲刺动量空", Math.max(vwapValue || latest, resistance || latest, latest + atrStep * 0.55), [Math.min(support, latest - atrStep * 0.9), Math.min(psychDown - 160, latest - atrStep * 1.7), Math.min(psychDown - 520, latest - atrStep * 2.6)], "短线放量接近跌破位，冲刺模式允许提前试空。");
     }
   } else if (regime.code === "range") {
     if (rangePos <= 0.24 && Number(metrics.rsi15m || 50) <= 48 && (metrics.higherLows5m || Number(metrics.macd15m.hist || 0) > 0)) {
@@ -706,8 +764,8 @@ function detectBestSetup(metrics, scores, regime) {
   }
   const filtered = candidates.filter((candidate) => {
     if (candidate.expectedRR < SIM_MIN_EXPECTED_RR) return false;
-    if (candidate.side === "long") return scores.longScore >= scores.shortScore - 6 && scores.longWarningScore >= 38;
-    return scores.shortScore >= scores.longScore - 6 && scores.shortWarningScore >= 38;
+    if (candidate.side === "long") return scores.longScore >= scores.shortScore - 14 && scores.longWarningScore >= 34;
+    return scores.shortScore >= scores.longScore - 14 && scores.shortWarningScore >= 34;
   });
   filtered.sort((a, b) => (b.expectedRR + b.scoreEdge / 100) - (a.expectedRR + a.scoreEdge / 100));
   if (filtered[0]) return filtered[0];
@@ -720,11 +778,39 @@ function detectBestSetup(metrics, scores, regime) {
 }
 
 function simRiskCheck(state, scores, setup) {
-  if (state.balanceCny < SIM_INITIAL_CNY * 0.7) return "模拟权益低于初始资金70%，进入保护模式，只允许平仓。";
+  if (state.balanceCny <= SIM_BLOWUP_RESTART_CNY) return "模拟本金接近归零，等待自动重开下一轮冲刺。";
   if (!setup || setup.side === "flat") return setup?.entryReason || "没有合格交易模型。";
-  if (scores.riskScore >= 80) return "风险评分过高，禁止开新仓。";
+  if (scores.riskScore >= 92) return "极端风险评分过高，禁止开新仓。";
   if (Number(setup.expectedRR || 0) < SIM_MIN_EXPECTED_RR) return `预期盈亏比${Number(setup.expectedRR || 0).toFixed(2)}低于${SIM_MIN_EXPECTED_RR}，不开仓。`;
   return "";
+}
+
+function restartSimIfBlownUp(state) {
+  if (state.position || Number(state.balanceCny || 0) > SIM_BLOWUP_RESTART_CNY) return false;
+  const previousBalance = Number(state.balanceCny || 0);
+  state.resetCount = Number(state.resetCount || 0) + 1;
+  state.balanceCny = SIM_INITIAL_CNY;
+  state.initialCny = SIM_INITIAL_CNY;
+  state.maxEquityCny = SIM_INITIAL_CNY;
+  state.lossStreak = 0;
+  state.lastDecisionAt = null;
+  state.lastOpenSide = null;
+  pushSimRecord(state, {
+    action: "亏完重开模拟",
+    side: "flat",
+    price: 0,
+    quantityBtc: 0,
+    marginCny: 0,
+    feeCny: 0,
+    pnlCny: previousBalance - SIM_INITIAL_CNY,
+    balanceCny: state.balanceCny,
+    marketRegime: "冲刺实验",
+    setupType: "自动重开",
+    expectedRR: 0,
+    invalidPrice: 0,
+    reason: `上一轮余额降至¥${previousBalance.toFixed(2)}，按用户设定允许亏完重开，开启第${state.resetCount + 1}轮5万到10万冲刺。`,
+  });
+  return true;
 }
 
 function simSignalProfile(scores, side, state, setup = null) {
@@ -733,32 +819,27 @@ function simSignalProfile(scores, side, state, setup = null) {
   const warning = side === "long" ? scores.longWarningScore : scores.shortWarningScore;
   const edge = confirm - opposite;
   const rr = Number(setup?.expectedRR || 0);
-  let leverage = 12;
-  let marginPct = 0.05;
-  let lossPct = 0.012;
-  let label = "普通信号";
-  if (rr >= 2.2 && confirm >= 65 && warning >= 50 && edge >= 10 && scores.riskScore <= 55) {
-    leverage = 20;
-    marginPct = 0.08;
-    lossPct = 0.016;
-    label = "强信号";
-  }
-  if (rr >= 2.8 && confirm >= 74 && warning >= 58 && edge >= 16 && scores.riskScore <= 42) {
+  let leverage = SIM_BASE_LEVERAGE;
+  let marginPct = SIM_BASE_MARGIN_PCT;
+  let lossPct = SIM_BASE_LOSS_PCT;
+  let label = "冲刺普通信号";
+  if (rr >= 1.75 && confirm >= 58 && warning >= 42 && edge >= 4 && scores.riskScore <= 72) {
     leverage = SIM_STRONG_LEVERAGE;
-    marginPct = 0.10;
-    lossPct = 0.02;
-    label = "极强信号";
+    marginPct = 0.26;
+    lossPct = 0.06;
+    label = "冲刺强信号";
   }
-  const lastClosed = (state.records || []).find((record) => ["止盈平仓", "止损平仓", "反向信号平仓"].includes(record.action));
-  if (lastClosed && Number(lastClosed.pnlCny || 0) > 0) {
-    marginPct *= 0.5;
-    label += "，上一笔盈利后保证金减半";
+  if (rr >= 2.35 && confirm >= 66 && warning >= 50 && edge >= 8 && scores.riskScore <= 62) {
+    leverage = SIM_MAX_LEVERAGE;
+    marginPct = SIM_MAX_MARGIN_PCT;
+    lossPct = SIM_MAX_LOSS_PCT;
+    label = "冲刺极强信号";
   }
-  if (scores.riskScore >= 60) {
-    leverage = Math.min(leverage, 10);
-    marginPct = Math.min(marginPct, 0.05);
-    lossPct = Math.min(lossPct, 0.012);
-    label += "，风险降档";
+  if (scores.riskScore >= 75) {
+    leverage = Math.min(leverage, SIM_BASE_LEVERAGE);
+    marginPct = Math.min(marginPct, 0.18);
+    lossPct = Math.min(lossPct, 0.04);
+    label += "，极端波动降一档";
   }
   return { leverage, marginPct, lossPct, label, confirm, warning, edge, expectedRR: rr, setupType: setup?.setupType || "" };
 }
@@ -1098,6 +1179,7 @@ function canOpenSim(state, scores, side, metrics) {
 }
 
 function runSimDecision(state, market) {
+  restartSimIfBlownUp(state);
   const metrics = market.metrics;
   const scores = simScores(metrics);
   const marketRegime = classifyMarketRegime(metrics, scores);
@@ -1244,6 +1326,9 @@ async function simBrief(request, env) {
       equityCny: result.equityCny,
       floatingPnlCny: result.floatingPnlCny,
       initialCny: state.initialCny,
+      targetCny: SIM_TARGET_CNY,
+      sprintDays: SIM_SPRINT_DAYS,
+      resetCount: state.resetCount || 0,
       maxEquityCny: state.maxEquityCny,
       drawdownPct: result.drawdownPct,
       winRate: result.winRate,
@@ -1288,6 +1373,9 @@ async function simBrief(request, env) {
         minWarningScore: SIM_MIN_WARNING_SCORE,
         minScoreEdge: SIM_MIN_SCORE_EDGE,
         maxVwapChasePct: SIM_MAX_VWAP_CHASE_PCT,
+        blowupRestartCny: SIM_BLOWUP_RESTART_CNY,
+        mode: "aggressive_sprint",
+        objective: "7天内5万冲刺到10万，允许归零后重开模拟",
       },
     });
   } catch (error) {

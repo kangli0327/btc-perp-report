@@ -418,8 +418,8 @@ def render_report(
     </section>
 
     <section class="sim-panel">
-      <h2>AI模拟盘：5万元BTC合约测试</h2>
-      <p class="small">模拟盘不连接真实账户，不代表真实收益；用于观察 AI 策略在 BTCUSDT 永续上的操盘表现。</p>
+      <h2>AI模拟盘：7天5万冲刺10万</h2>
+      <p class="small">模拟盘不连接真实账户，不代表真实收益；当前为高风险冲刺实验，允许亏完后自动重开下一轮。</p>
       <div class="sim-actions">
         <button id="refreshSimButton" type="button">刷新模拟盘</button>
         <button id="resetSimButton" type="button">重置模拟盘</button>
@@ -427,6 +427,8 @@ def render_report(
       <div class="sim-grid">
         <div class="sim-card"><div class="label">模拟余额</div><div class="value" id="simBalance">等待刷新</div></div>
         <div class="sim-card"><div class="label">模拟权益</div><div class="value" id="simEquity">等待刷新</div></div>
+        <div class="sim-card"><div class="label">冲刺目标</div><div class="value" id="simTarget">等待刷新</div></div>
+        <div class="sim-card"><div class="label">重开轮次</div><div class="value" id="simResetCount">等待刷新</div></div>
         <div class="sim-card"><div class="label">浮盈浮亏</div><div class="value" id="simFloatingPnl">等待刷新</div></div>
         <div class="sim-card"><div class="label">胜率 / 交易数</div><div class="value" id="simWinRate">等待刷新</div></div>
         <div class="sim-card"><div class="label">当前持仓</div><div class="value" id="simPositionSide">等待刷新</div></div>
@@ -1742,6 +1744,8 @@ def render_report(
       const p = payload.position || null;
       setText('simBalance', fmtCny(Number(payload.balanceCny || 0)));
       setText('simEquity', fmtCny(Number(payload.equityCny || 0)));
+      setText('simTarget', `${{fmtCny(Number(payload.initialCny || 50000))}} → ${{fmtCny(Number(payload.targetCny || 100000))}} / ${{payload.sprintDays || 7}}天`);
+      setText('simResetCount', `第${{Number(payload.resetCount || 0) + 1}}轮`);
       setText('simFloatingPnl', `${{Number(payload.floatingPnlCny || 0) >= 0 ? '+' : ''}}${{fmtCny(Number(payload.floatingPnlCny || 0))}}`);
       setText('simWinRate', `${{fmtPct(Number(payload.winRate || 0))}} / ${{Number(payload.totalTrades || 0)}}笔`);
       setText('simPositionSide', p ? `${{simSideText(p.side)}} · ${{p.leverage || 100}}x` : '空仓');
@@ -1759,7 +1763,7 @@ def render_report(
       const simWarningText = payload.sourceWarning || payload.market?.sourceWarning || '';
       const scheduledText = payload.lastScheduledRunAt ? ` · 后台 ${{fmtTime(new Date(payload.lastScheduledRunAt))}}` : ' · 后台等待首次运行';
       const triggerText = payload.lastSimTrigger ? ` · 触发 ${{['scheduled', 'github-cron'].includes(payload.lastSimTrigger) ? '后台' : '页面'}}` : '';
-      setText('simStatus', `状态：成功 · ${{fmtTime(new Date(payload.updatedAt || Date.now()))}}${{scheduledText}}${{triggerText}} · 回撤 ${{fmtPct(Number(payload.drawdownPct || 0))}} · 行情源 ${{simSourceText}} · 汇率 ${{Number(payload.market?.cnyRate || 0).toFixed(3)}}${{simWarningText ? ' · ' + simWarningText : ''}}`);
+      setText('simStatus', `状态：成功 · 高风险冲刺 · ${{fmtTime(new Date(payload.updatedAt || Date.now()))}}${{scheduledText}}${{triggerText}} · 回撤 ${{fmtPct(Number(payload.drawdownPct || 0))}} · 行情源 ${{simSourceText}} · 汇率 ${{Number(payload.market?.cnyRate || 0).toFixed(3)}}${{simWarningText ? ' · ' + simWarningText : ''}}`);
       const pnlEl = document.getElementById('simFloatingPnl');
       if (pnlEl) pnlEl.className = `value ${{simPnlClass(payload.floatingPnlCny)}}`;
       const body = document.getElementById('simRecords');
