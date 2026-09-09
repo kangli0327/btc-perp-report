@@ -400,6 +400,12 @@ function buildSimMetrics(c15, c1h, c4h, c5m, c1m, latest, funding, rateInfo, sou
     lowerHighs5m: lowerHighs(c5m),
     higherLows1m: higherLows(c1m),
     lowerHighs1m: lowerHighs(c1m),
+    recent1mCandles: (c1m || []).slice(-500).map((item) => ({
+      ts: item.ts,
+      high: item.high,
+      low: item.low,
+      close: item.close,
+    })),
   };
   return { metrics, rateInfo, source, updatedAt: new Date().toISOString() };
 }
@@ -411,7 +417,7 @@ async function okxSimMarketSnapshot() {
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1H&limit=160", 30),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=4H&limit=160", 60),
     okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=5m&limit=80", 10),
-    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1m&limit=80", 10),
+    okxPublic("/api/v5/market/candles?instId=BTC-USDT-SWAP&bar=1m&limit=300", 10),
     okxPublicOptional("/api/v5/public/funding-rate?instId=BTC-USDT-SWAP", [{ fundingRate: 0 }], 120),
     cnyRate(),
   ]);
@@ -432,7 +438,7 @@ async function binanceSimMarketSnapshot() {
     binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=1h&limit=160", 30),
     binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=160", 60),
     binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=5m&limit=80", 10),
-    binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=80", 10),
+    binancePublic("/fapi/v1/klines?symbol=BTCUSDT&interval=1m&limit=500", 10),
     cnyRate(),
   ]);
   const c15 = c15Rows.map(binanceCandle);
@@ -452,7 +458,7 @@ async function bybitSimMarketSnapshot() {
     bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=160", 30),
     bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=240&limit=160", 60),
     bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=5&limit=80", 10),
-    bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=1&limit=80", 10),
+    bybitPublic("/v5/market/kline?category=linear&symbol=BTCUSDT&interval=1&limit=500", 10),
     cnyRate(),
   ]);
   const c15 = (c15Data.list || []).map(bybitCandle).reverse();
@@ -944,10 +950,10 @@ function ensureSimExitPlan(position, market) {
   return position;
 }
 
-function closeSimPosition(state, market, action, reason) {
+function closeSimPosition(state, market, action, reason, executionPrice = null) {
   const position = state.position;
   if (!position) return 0;
-  const latest = market.metrics.latest;
+  const latest = Number(executionPrice || market.metrics.latest);
   const rate = market.rateInfo.rate;
   const pnlCny = simPnlCny(position, latest, rate);
   const closeFeeCny = position.quantityBtc * latest * SIM_FEE_RATE * rate;
@@ -981,10 +987,10 @@ function closeSimPosition(state, market, action, reason) {
   return netPnlCny;
 }
 
-function closeSimPartial(state, market, target, reason) {
+function closeSimPartial(state, market, target, reason, executionPrice = null) {
   const position = state.position;
   if (!position) return 0;
-  const latest = market.metrics.latest;
+  const latest = Number(executionPrice || market.metrics.latest);
   const rate = market.rateInfo.rate;
   const initialQty = Number(position.initialQuantityBtc || position.quantityBtc || 0);
   const closeQty = Math.min(Number(position.quantityBtc || 0), Math.max(0, initialQty * Number(target.closePct || 0)));
@@ -1178,6 +1184,34 @@ function canOpenSim(state, scores, side, metrics) {
   return simEntryQuality(metrics, side);
 }
 
+function simCandlesSince(position, metrics) {
+  const candles = Array.isArray(metrics.recent1mCandles) ? metrics.recent1mCandles : [];
+  const openedAt = new Date(position?.openedAt || 0).getTime();
+  const lastCheckedAt = new Date(position?.lastExitCheckAt || position?.openedAt || 0).getTime();
+  const from = Math.max(openedAt || 0, lastCheckedAt || 0) - 70 * 1000;
+  return candles.filter((item) => Number(item.ts || 0) >= from);
+}
+
+function simTouchedPrice(position, metrics, price) {
+  const target = Number(price || 0);
+  if (!position || !target) return false;
+  const candles = simCandlesSince(position, metrics);
+  if (position.side === "long") {
+    return candles.some((item) => Number(item.high || 0) >= target);
+  }
+  return candles.some((item) => Number(item.low || 0) <= target);
+}
+
+function simTouchedStop(position, metrics) {
+  const stop = Number(position?.stopLoss || 0);
+  if (!position || !stop) return false;
+  const candles = simCandlesSince(position, metrics);
+  if (position.side === "long") {
+    return Number(metrics.latest || 0) <= stop || candles.some((item) => Number(item.low || 0) <= stop);
+  }
+  return Number(metrics.latest || 0) >= stop || candles.some((item) => Number(item.high || 0) >= stop);
+}
+
 function runSimDecision(state, market) {
   restartSimIfBlownUp(state);
   const metrics = market.metrics;
@@ -1190,23 +1224,19 @@ function runSimDecision(state, market) {
   if (state.position) {
     const position = state.position;
     ensureSimExitPlan(position, market);
-    if ((position.side === "long" && metrics.latest <= position.stopLoss) || (position.side === "short" && metrics.latest >= position.stopLoss)) {
-      closeSimPosition(state, market, "止损平仓", "价格触及开仓时锁定止损，优先控制单笔亏损。");
+    if (simTouchedStop(position, metrics)) {
+      closeSimPosition(state, market, "止损平仓", "1分钟K线触及开仓时锁定止损，优先控制单笔亏损。", Number(position.stopLoss || metrics.latest));
       decision = "止损平仓";
-      reason = "价格触及开仓时锁定止损。";
+      reason = "1分钟K线触及开仓时锁定止损。";
     } else {
       const nextTarget = (position.partialTargets || []).find((target) => !target.hit);
-      const hitPartial = nextTarget && (
-        (position.side === "long" && metrics.latest >= Number(nextTarget.price || 0))
-        || (position.side === "short" && metrics.latest <= Number(nextTarget.price || 0))
-      );
+      const hitPartial = nextTarget && simTouchedPrice(position, metrics, Number(nextTarget.price || 0));
       const hitRunner = !hitPartial && Number(position.runnerTarget || 0) > 0 && (
-        (position.side === "long" && metrics.latest >= Number(position.runnerTarget || 0))
-        || (position.side === "short" && metrics.latest <= Number(position.runnerTarget || 0))
+        simTouchedPrice(position, metrics, Number(position.runnerTarget || 0))
       );
       if (hitPartial) {
         const label = nextTarget.id === "tp1" ? "第一止盈减仓" : "第二止盈减仓";
-        closeSimPartial(state, market, nextTarget, `${nextTarget.label || label}触发，先落袋一部分，剩余仓位继续看突破延伸。`);
+        closeSimPartial(state, market, nextTarget, `${nextTarget.label || label}触发，先落袋一部分，剩余仓位继续看突破延伸。`, Number(nextTarget.price || metrics.latest));
         decision = label;
         reason = `${nextTarget.label || label}触发，已分批落袋，剩余仓位继续按突破管理。`;
       } else if (hitRunner) {
@@ -1216,14 +1246,14 @@ function runSimDecision(state, market) {
           decision = "尾仓目标上移";
           reason = "尾仓目标已到，但趋势仍强，继续持有尾仓并上移目标。";
         } else {
-          closeSimPosition(state, market, "尾仓止盈", "价格触及尾仓突破目标，且趋势延伸条件不足，退出剩余仓位。");
+          closeSimPosition(state, market, "尾仓止盈", "1分钟K线触及尾仓突破目标，且趋势延伸条件不足，退出剩余仓位。", Number(position.runnerTarget || metrics.latest));
           decision = "尾仓止盈";
-          reason = "价格触及尾仓突破目标，趋势延伸条件不足。";
+          reason = "1分钟K线触及尾仓突破目标，趋势延伸条件不足。";
         }
-      } else if (!Array.isArray(position.partialTargets) && ((position.side === "long" && metrics.latest >= position.takeProfit) || (position.side === "short" && metrics.latest <= position.takeProfit))) {
-        closeSimPosition(state, market, "止盈平仓", "价格触及开仓时锁定止盈，落袋为安。");
+      } else if (!Array.isArray(position.partialTargets) && simTouchedPrice(position, metrics, Number(position.takeProfit || 0))) {
+        closeSimPosition(state, market, "止盈平仓", "1分钟K线触及开仓时锁定止盈，落袋为安。", Number(position.takeProfit || metrics.latest));
         decision = "止盈平仓";
-        reason = "价格触及开仓时锁定止盈。";
+        reason = "1分钟K线触及开仓时锁定止盈。";
       } else if (position.side === "long" && metrics.latest < Math.min(Number(position.invalidPrice || position.stopLoss || 0), Number(metrics.vwap24h || Infinity)) && scores.shortScore - scores.longScore >= 24 && scores.shortWarningScore >= 62) {
         closeSimPosition(state, market, "反向结构平仓", "多单结构跌破，同时空头评分占优，退出多单。");
         decision = "反向信号平仓";
@@ -1240,6 +1270,7 @@ function runSimDecision(state, market) {
           reason = "已有仓位未触及止盈止损，分批止盈计划继续执行。";
         }
       }
+      if (state.position) state.position.lastExitCheckAt = new Date().toISOString();
     }
   }
   if (!state.position && !["止损平仓", "止盈平仓", "第一止盈减仓", "第二止盈减仓", "尾仓止盈", "尾仓平仓", "反向信号平仓"].includes(decision)) {
