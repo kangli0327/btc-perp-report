@@ -1225,9 +1225,12 @@ function runSimDecision(state, market) {
     const position = state.position;
     ensureSimExitPlan(position, market);
     if (simTouchedStop(position, metrics)) {
-      closeSimPosition(state, market, "止损平仓", "1分钟K线触及开仓时锁定止损，优先控制单笔亏损。", Number(position.stopLoss || metrics.latest));
-      decision = "止损平仓";
-      reason = "1分钟K线触及开仓时锁定止损。";
+      const protectiveProfit = Boolean(position.stopMovedAfterTp1);
+      const stopAction = protectiveProfit ? "移动止盈平仓" : "止损平仓";
+      const stopReason = protectiveProfit ? "1分钟K线触及第一止盈后的移动保护位，保住剩余仓位利润。" : "1分钟K线触及开仓时锁定止损，优先控制单笔亏损。";
+      closeSimPosition(state, market, stopAction, stopReason, Number(position.stopLoss || metrics.latest));
+      decision = stopAction;
+      reason = protectiveProfit ? "1分钟K线触及移动保护位。" : "1分钟K线触及开仓时锁定止损。";
     } else {
       const nextTarget = (position.partialTargets || []).find((target) => !target.hit);
       const hitPartial = nextTarget && simTouchedPrice(position, metrics, Number(nextTarget.price || 0));
