@@ -21,6 +21,8 @@ class WorkerContractTest(unittest.TestCase):
         self.assertIn("upcomingWindowHours", source)
         self.assertIn("未来7天暂无已接入的高影响宏观事件", source)
         self.assertIn("美联储9月15-16日FOMC议息观察窗口", source)
+        self.assertIn("美国8月PPI生产者价格指数", source)
+        self.assertIn("BLS官方PPI发布", source)
         self.assertIn("placeholder: true", source)
         self.assertIn("function officialMacroEvents", source)
         self.assertIn("recentReleasedEvents", source)

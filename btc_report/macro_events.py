@@ -16,6 +16,7 @@ NYFED_URL = "https://www.newyorkfed.org/research/calendars/nationalecon_cal"
 FED_URL = "https://www.federalreserve.gov/newsevents/calendar.htm"
 BEA_URL = "https://www.bea.gov/news/schedule"
 BLS_EMPSIT_URL = "https://www.bls.gov/schedule/news_release/empsit.htm"
+BLS_PPI_URL = "https://www.bls.gov/news.release/ppi.nr0.htm"
 
 HIGH_IMPACT = {
     "FOMC": ("高", "利率预期会直接影响美元流动性和风险资产估值，BTC 通常会放大波动。"),
@@ -146,6 +147,18 @@ def _source_health(url: str, source: str, warnings: list[str]) -> None:
 
 def _curated_events() -> list[MacroEvent]:
     return [
+        MacroEvent(
+            title="美国8月PPI生产者价格指数",
+            source="BLS官方PPI发布",
+            url=BLS_PPI_URL,
+            scheduled_at=datetime(2026, 9, 10, 8, 30, tzinfo=ET),
+            impact="中高",
+            btc_view="PPI 会影响市场对通胀粘性和降息路径的判断，明显高于预期通常压制BTC。",
+            expected="市场预期：PPI同比约5.3%；重点看Final Demand和核心PPI是否继续偏热。",
+            previous="前值：7月PPI同比约4.8%；用于判断上游通胀压力是否重新抬头。",
+            my_forecast="我的判断：这次PPI偏热，说明通胀压力没有完全降下来，短线不利于风险资产直接追多。",
+            btc_direction="BTC方向：短线偏利空BTC；如果随后CPI也偏热，空头压力会加强；如果CPI降温，则PPI影响可能被削弱。",
+        ),
         MacroEvent(
             title="美联储9月15-16日FOMC议息观察窗口",
             source="Federal Reserve FOMC日程",
