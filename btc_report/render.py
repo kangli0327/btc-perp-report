@@ -427,6 +427,8 @@ def render_report(
       <ul id="macroEventsList">{macro_events_html}</ul>
       <h3>最近7天关键消息</h3>
       <ul id="recentMacroEventsList"></ul>
+      <h3>持续观察指标</h3>
+      <ul id="macroObservationList"><li>等待实时宏观观察指标刷新。</li></ul>
     </section>
 
     <section>
@@ -1721,14 +1723,25 @@ def render_report(
     }}
     function renderMacroEvent(event) {{
       const eventType = event.type || (String(event.category || '').toLowerCase().includes('crypto') ? '加密政策' : '经济数据');
+      const eventTime = event.scheduledAt ? `${{fmtTime(new Date(event.scheduledAt))}} 北京时间 · ` : '';
       return `
         <li>
-          <strong>${{fmtTime(new Date(event.scheduledAt))}} 北京时间 · ${{event.title}}</strong>
+          <strong>${{eventTime}}${{event.title}}</strong>
           <br><span class="small">类型：${{eventType}} · 来源：${{event.source}} · 影响：${{event.impact}} · 状态：${{event.status}}</span>
           <br><span class="small"><strong>预期：</strong>${{event.forecast || '-'}}</span>
           <br><span class="small"><strong>前值：</strong>${{event.previous || '-'}}</span>
           <br><span class="small"><strong>实际值：</strong>${{event.actual || '-'}}</span>
           <br><span class="small"><strong>BTC方向：</strong>${{event.btcDirection}}</span>
+        </li>`;
+    }}
+    function renderObservationEvent(event) {{
+      const eventType = event.type || '观察指标';
+      return `
+        <li>
+          <strong>${{event.title}}</strong>
+          <br><span class="small">类型：${{eventType}} · 更新频率：${{event.updateFrequency || '持续观察'}} · 来源：${{event.source}} · 影响：${{event.impact}}</span>
+          <br><span class="small"><strong>观察重点：</strong>${{event.forecast || '-'}}</span>
+          <br><span class="small"><strong>BTC方向：</strong>${{event.btcDirection || '-'}}</span>
         </li>`;
     }}
     function simSideText(side) {{
@@ -1853,9 +1866,10 @@ def render_report(
         const events = payload.events || [];
         const upcoming = (payload.upcomingEvents || events).filter(event => !event.placeholder);
         const recent = (payload.recentReleasedEvents || []).filter(event => !event.placeholder);
+        const observations = (payload.observationEvents || []).filter(event => !event.placeholder);
         const warnings = payload.warnings || [];
         const macroMode = payload.macroStatus && payload.macroStatus.freeOfficialMode ? '免费官方源' : payload.source;
-        setText('macroSummary', `未来7天 ${{upcoming.length}} 个；最近7天关键消息 ${{recent.length}} 个；数据源：${{macroMode}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
+        setText('macroSummary', `未来7天定时事件 ${{upcoming.length}} 个；最近7天关键消息 ${{recent.length}} 个；持续观察 ${{observations.length}} 个；数据源：${{macroMode}}；刷新：${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
         setText('macroForecast', v5MacroDirectionSummary(recent.length ? recent : upcoming.length ? upcoming : events));
         setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布关键数据保留7天`);
         setText('macroWarnings', warnings.length ? `数据源状态：${{warnings.join('；')}}` : `数据源状态：${{macroMode}}正常`);
@@ -1869,6 +1883,8 @@ def render_report(
         if (list) list.innerHTML = upcoming.length ? upcoming.map(renderMacroEvent).join('') : '<li>未来7天暂无已接入的高影响宏观事件。</li>';
         const recentList = document.getElementById('recentMacroEventsList');
         if (recentList) recentList.innerHTML = recent.length ? recent.map(renderMacroEvent).join('') : '<li>最近7天暂无已接入的关键消息。</li>';
+        const observationList = document.getElementById('macroObservationList');
+        if (observationList) observationList.innerHTML = observations.length ? observations.map(renderObservationEvent).join('') : '<li>暂无持续观察指标。</li>';
       }} catch (error) {{
         setText('macroSummary', `宏观事件刷新失败：${{String(error).slice(0, 80)}}`);
       }}

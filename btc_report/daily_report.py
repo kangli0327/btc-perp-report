@@ -95,9 +95,11 @@ def _position_note(position: PositionConfig, indicators: Indicators, account: di
 def _macro_focus(macro_brief: MacroBrief, macro_payload: dict[str, Any] | None) -> tuple[str, str]:
     upcoming = []
     recent = []
+    observations = []
     if macro_payload:
         upcoming = [x for x in macro_payload.get("upcomingEvents", []) if not x.get("placeholder")]
         recent = [x for x in macro_payload.get("recentReleasedEvents", []) if not x.get("placeholder")]
+        observations = [x for x in macro_payload.get("observationEvents", []) if not x.get("placeholder")]
 
     if upcoming:
         first = next((x for x in upcoming if x.get("status") != "观察" and x.get("impact") in {"高", "中高"}), upcoming[0])
@@ -115,6 +117,8 @@ def _macro_focus(macro_brief: MacroBrief, macro_payload: dict[str, Any] | None) 
         last = recent[0]
         focus += f"；已公布：{last.get('title', '-')}"
         judgment = last.get("btcDirection") or judgment
+    if observations:
+        focus += f"；持续观察：{observations[0].get('title', '-')}"
     return focus, judgment
 
 

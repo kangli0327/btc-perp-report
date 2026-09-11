@@ -31,6 +31,8 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("refreshMacroEvents", source)
         self.assertIn("macroEventsList", source)
         self.assertIn("recentMacroEventsList", source)
+        self.assertIn("macroObservationList", source)
+        self.assertIn("持续观察指标", source)
         self.assertIn("macroWarnings", source)
         self.assertIn("未来7天宏观事件", source)
         self.assertIn("未来7天", source)

@@ -1616,14 +1616,14 @@ function policyCryptoEvents(now) {
 }
 
 function marketMacroSignalEvents(now) {
-  const oneHour = 60 * 60 * 1000;
   return [
     {
       title: "CME FedWatch利率概率观察",
       country: "US",
       category: "Rate Expectations",
       type: "利率预期",
-      scheduledAt: new Date(now.getTime() + oneHour).toISOString(),
+      scheduledAt: null,
+      updateFrequency: "实时变化",
       impact: "高",
       forecast: "免费模式暂未接入实时概率数值；重点看降息概率是否上升、加息/更久高利率概率是否抬头。",
       previous: "若降息概率上升，通常利好BTC；若维持高利率概率上升，通常压制BTC。",
@@ -1638,7 +1638,8 @@ function marketMacroSignalEvents(now) {
       country: "US",
       category: "Treasury Auctions",
       type: "美债流动性",
-      scheduledAt: new Date(now.getTime() + 2 * oneHour).toISOString(),
+      scheduledAt: null,
+      updateFrequency: "按拍卖日程/季度再融资公告更新",
       impact: "中高",
       forecast: "关注短债/长债拍卖需求、收益率尾部和季度再融资公告；弱拍卖会推高收益率并压制风险资产。",
       previous: "强拍卖代表流动性承接较好；弱拍卖代表期限溢价和收益率压力上升。",
@@ -1653,7 +1654,8 @@ function marketMacroSignalEvents(now) {
       country: "US",
       category: "Dollar and Yields",
       type: "美元/美债",
-      scheduledAt: new Date(now.getTime() + 3 * oneHour).toISOString(),
+      scheduledAt: null,
+      updateFrequency: "实时观察",
       impact: "中高",
       forecast: "免费模式先作为规则源；后续可接FRED或市场数据API自动量化。",
       previous: "DXY和10年美债收益率同涨，通常压制BTC；同跌，通常利好BTC。",
@@ -1663,22 +1665,18 @@ function marketMacroSignalEvents(now) {
       sourceUrls: ["https://fred.stlouisfed.org/series/DGS10", "https://home.treasury.gov/resource-center/data-chart-center/interest-rates"],
       btcDirection: "方向规则：美元和美债收益率同步走强偏利空BTC；同步走弱偏利多BTC；背离时优先看BTC资金费率和ETF流向。",
     },
-  ].filter((event) => {
-    const t = new Date(event.scheduledAt);
-    const until = new Date(now.getTime() + UPCOMING_MACRO_WINDOW_MS);
-    return t >= now && t <= until;
-  });
+  ];
 }
 
 function cryptoFlowEvents(now) {
-  const fourHours = 4 * 60 * 60 * 1000;
   return [
     {
       title: "美国现货BTC ETF资金流观察",
       country: "US",
       category: "BTC ETF Flow",
       type: "ETF资金流",
-      scheduledAt: new Date(now.getTime() + fourHours).toISOString(),
+      scheduledAt: null,
+      updateFrequency: "美股收盘后/资金流源更新后",
       impact: "高",
       forecast: "免费模式暂未接入逐只ETF实时净流入；重点看连续净流入/净流出是否改变现货买盘。",
       previous: "连续净流入通常增强现货买盘；连续净流出通常削弱反弹。",
@@ -1693,7 +1691,8 @@ function cryptoFlowEvents(now) {
       country: "Global",
       category: "Stablecoin Liquidity",
       type: "稳定币流动性",
-      scheduledAt: new Date(now.getTime() + 5 * 60 * 60 * 1000).toISOString(),
+      scheduledAt: null,
+      updateFrequency: "每日观察",
       impact: "中高",
       forecast: "免费模式先使用规则源；后续可接DefiLlama稳定币供应、交易所净流入等免费接口。",
       previous: "稳定币供应扩张和交易所买盘增强通常支撑BTC；稳定币收缩代表场内流动性偏紧。",
@@ -1703,11 +1702,7 @@ function cryptoFlowEvents(now) {
       sourceUrls: ["https://defillama.com/stablecoins"],
       btcDirection: "方向规则：稳定币供应扩张偏利多BTC；供应收缩或交易所抛压增强偏利空BTC。",
     },
-  ].filter((event) => {
-    const t = new Date(event.scheduledAt);
-    const until = new Date(now.getTime() + UPCOMING_MACRO_WINDOW_MS);
-    return t >= now && t <= until;
-  });
+  ];
 }
 
 function dedupeMacroEvents(events) {
@@ -1754,7 +1749,8 @@ async function macroBrief(request, env) {
   const rateAndLiquidityEvents = marketMacroSignalEvents(now);
   const cryptoFlowSignalEvents = cryptoFlowEvents(now);
   if (officialEvents.length || cryptoPolicyEvents.length || rateAndLiquidityEvents.length || cryptoFlowSignalEvents.length) sources.push(FREE_MACRO_SOURCE);
-  const combined = dedupeMacroEvents([...events, ...officialEvents, ...cryptoPolicyEvents, ...rateAndLiquidityEvents, ...cryptoFlowSignalEvents]);
+  const observationEvents = [...rateAndLiquidityEvents, ...cryptoFlowSignalEvents];
+  const combined = dedupeMacroEvents([...events, ...officialEvents, ...cryptoPolicyEvents]);
   const upcomingEvents = combined.filter((event) => {
     const t = new Date(event.scheduledAt);
     return !event.placeholder && t >= now && t <= until;
@@ -1789,6 +1785,7 @@ async function macroBrief(request, env) {
     events: visibleEvents,
     upcomingEvents,
     recentReleasedEvents,
+    observationEvents,
     policyCryptoEvents: cryptoPolicyEvents,
     rateAndLiquidityEvents,
     cryptoFlowEvents: cryptoFlowSignalEvents,
