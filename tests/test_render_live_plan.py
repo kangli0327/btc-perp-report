@@ -46,6 +46,8 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("refreshSim", source)
         self.assertIn("resetSim", source)
         self.assertIn("simRecords", source)
+        self.assertIn("simRecordCards", source)
+        self.assertIn("sim-record-reason", source)
         self.assertIn("高风险冲刺实验", source)
         self.assertIn("simTarget", source)
         self.assertIn("simResetCount", source)
