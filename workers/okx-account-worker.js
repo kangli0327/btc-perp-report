@@ -22,6 +22,12 @@ const SIM_BLOWUP_RESTART_CNY = 500;
 const SIM_COOLDOWN_MS = 5 * 60 * 1000;
 const SIM_TP1_CLOSE_PCT = 0.25;
 const SIM_TP2_CLOSE_PCT = 0.25;
+const SIM_EXIT_PROFILES = {
+  full_tp1: { label: "震荡快出：第一止盈全平", tp1Pct: 1, tp2Pct: 0, useRunner: false },
+  tp1_heavy: { label: "混沌保护：第一止盈重仓落袋", tp1Pct: 0.8, tp2Pct: 0.2, useRunner: false },
+  partial_runner: { label: "趋势分批：减仓后保留尾仓", tp1Pct: 0.3, tp2Pct: 0.3, useRunner: true },
+  breakout_runner: { label: "突破奔跑：轻减仓追踪延伸", tp1Pct: 0.25, tp2Pct: 0.25, useRunner: true },
+};
 const SIM_MIN_CONFIRM_SCORE = 68;
 const SIM_MIN_WARNING_SCORE = 58;
 const SIM_MIN_SCORE_EDGE = 16;
@@ -856,6 +862,27 @@ function simPsychLevel(price, side) {
   return side === "long" ? Math.ceil(price / step) * step : Math.floor(price / step) * step;
 }
 
+function simExitProfile(setup = {}, metrics = {}, scores = {}, nearPsych = false) {
+  const regime = String(setup.marketRegime || "");
+  const setupType = String(setup.setupType || "");
+  const expectedRR = Number(setup.expectedRR || 0);
+  const scoreEdge = setup.side === "long"
+    ? Number(scores.longScore || 0) - Number(scores.shortScore || 0)
+    : Number(scores.shortScore || 0) - Number(scores.longScore || 0);
+  const volumeHot = Number(metrics.volumeRatio15m || 0) >= 1.25 || Number(metrics.volumeRatio5m || 0) >= 1.35;
+  const trendCode = /trend|momentum/.test(regime);
+  const rangeCode = regime === "range" || /区间反转/.test(setupType);
+  const breakout = /突破|动量/.test(setupType) || nearPsych;
+  if (rangeCode) return { code: "full_tp1", ...SIM_EXIT_PROFILES.full_tp1, reason: "震荡/区间模型胜率更依赖快速落袋，第一止盈触发后全部平仓。" };
+  if (!trendCode || expectedRR < 1.55 || Number(scores.riskScore || 0) >= 78) {
+    return { code: "tp1_heavy", ...SIM_EXIT_PROFILES.tp1_heavy, reason: "行情优势不够单边，第一止盈先落袋大部分，剩余只给一次延伸机会。" };
+  }
+  if (breakout && volumeHot && scoreEdge >= 12 && expectedRR >= 1.9) {
+    return { code: "breakout_runner", ...SIM_EXIT_PROFILES.breakout_runner, reason: "突破/动量模型且量能确认，保留尾仓追踪整数关口和ATR延伸。" };
+  }
+  return { code: "partial_runner", ...SIM_EXIT_PROFILES.partial_runner, reason: "趋势模型采用分批止盈，保留尾仓验证是否走出单边。" };
+}
+
 function buildSimExitPlan(side, entryPrice, riskDistance, metrics = {}, setup = null) {
   const latest = Number(entryPrice || metrics.latest || 0);
   const risk = Math.max(Number(riskDistance || 0), Number(metrics.atr15m || 0) * 1.2, latest * 0.004);
@@ -894,16 +921,21 @@ function buildSimExitPlan(side, entryPrice, riskDistance, metrics = {}, setup = 
     tp2 = Number(setup.targetPrices[1]);
     runnerTarget = Number(setup.targetPrices[2] || setup.targetPrices[1]);
   }
+  const profile = simExitProfile(setup || {}, metrics, setup?.scores || {}, nearPsych);
+  const partialTargets = [
+    { id: "tp1", label: "第一止盈", price: tp1, closePct: profile.tp1Pct, hit: false },
+  ];
+  if (profile.tp2Pct > 0) {
+    partialTargets.push({ id: "tp2", label: "第二止盈", price: tp2, closePct: profile.tp2Pct, hit: false });
+  }
   return {
     takeProfit: tp1,
     stopLoss,
-    runnerTarget,
+    runnerTarget: profile.useRunner ? runnerTarget : 0,
     breakoutLevel: nearPsych ? psych : null,
-    breakoutMode: nearPsych,
-    partialTargets: [
-      { id: "tp1", label: "第一止盈", price: tp1, closePct: SIM_TP1_CLOSE_PCT, hit: false },
-      { id: "tp2", label: "第二止盈", price: tp2, closePct: SIM_TP2_CLOSE_PCT, hit: false },
-    ],
+    breakoutMode: nearPsych || profile.code === "breakout_runner",
+    exitProfile: profile,
+    partialTargets,
   };
 }
 
@@ -914,7 +946,7 @@ function ensureSimExitPlan(position, market) {
   const stop = Number(position.stopLoss || 0);
   const existingRisk = stop > 0 ? Math.abs(entry - stop) : 0;
   const riskDistance = Math.max(existingRisk, Number(metrics.atr15m || 0) * 1.2, entry * 0.004);
-  if (!Array.isArray(position.partialTargets) || position.partialTargets.length < 2) {
+  if (!Array.isArray(position.partialTargets) || !position.exitProfile) {
     const plan = buildSimExitPlan(position.side, entry, riskDistance, metrics);
     const existingTp = Number(position.takeProfit || 0);
     if (existingTp > 0) {
@@ -922,7 +954,7 @@ function ensureSimExitPlan(position, market) {
       plan.takeProfit = existingTp;
       if (position.side === "long") {
         const psych = simPsychLevel(entry, "long");
-        if (psych > entry && existingTp >= psych) {
+        if (psych > entry && existingTp >= psych && plan.partialTargets[1]) {
           plan.partialTargets[1].price = Math.max(plan.partialTargets[1].price, psych + 500);
           plan.runnerTarget = Math.max(plan.runnerTarget, psych + 800);
           plan.breakoutLevel = psych;
@@ -930,7 +962,7 @@ function ensureSimExitPlan(position, market) {
         }
       } else {
         const psych = simPsychLevel(entry, "short");
-        if (psych > 0 && existingTp <= psych) {
+        if (psych > 0 && existingTp <= psych && plan.partialTargets[1]) {
           plan.partialTargets[1].price = Math.min(plan.partialTargets[1].price, psych - 500);
           plan.runnerTarget = Math.min(plan.runnerTarget, psych - 800);
           plan.breakoutLevel = psych;
@@ -943,6 +975,7 @@ function ensureSimExitPlan(position, market) {
     position.runnerTarget = plan.runnerTarget;
     position.breakoutLevel = plan.breakoutLevel;
     position.breakoutMode = plan.breakoutMode;
+    position.exitProfile = plan.exitProfile;
     position.initialQuantityBtc = Number(position.initialQuantityBtc || position.quantityBtc || 0);
     position.planUpgradedAt = position.planUpgradedAt || new Date().toISOString();
   }
@@ -979,6 +1012,7 @@ function closeSimPosition(state, market, action, reason, executionPrice = null) 
     setupType: position.setupType || "",
     expectedRR: position.expectedRR || 0,
     invalidPrice: position.invalidPrice || position.stopLoss || 0,
+    exitProfile: position.exitProfile?.label || position.exitProfileLabel || "",
     reason,
   });
   state.lastDecisionAt = new Date().toISOString();
@@ -995,6 +1029,9 @@ function closeSimPartial(state, market, target, reason, executionPrice = null) {
   const initialQty = Number(position.initialQuantityBtc || position.quantityBtc || 0);
   const closeQty = Math.min(Number(position.quantityBtc || 0), Math.max(0, initialQty * Number(target.closePct || 0)));
   if (!Number.isFinite(closeQty) || closeQty <= 0) return 0;
+  if (closeQty >= Number(position.quantityBtc || 0) * 0.999) {
+    return closeSimPosition(state, market, target.id === "tp1" ? "第一止盈全平" : "第二止盈全平", reason, latest);
+  }
   const rawUsdt = position.side === "long"
     ? (latest - position.entryPrice) * closeQty
     : (position.entryPrice - latest) * closeQty;
@@ -1029,6 +1066,7 @@ function closeSimPartial(state, market, target, reason, executionPrice = null) {
     setupType: position.setupType || "",
     expectedRR: position.expectedRR || 0,
     invalidPrice: position.invalidPrice || position.stopLoss || 0,
+    exitProfile: position.exitProfile?.label || position.exitProfileLabel || "",
     reason,
   });
   if (position.quantityBtc <= Math.max(0.0001, initialQty * 0.05)) {
@@ -1087,6 +1125,7 @@ function extendSimRunnerTarget(state, market, scores, reason) {
     setupType: position.setupType || "",
     expectedRR: position.expectedRR || 0,
     invalidPrice: position.invalidPrice || position.stopLoss || 0,
+    exitProfile: position.exitProfile?.label || position.exitProfileLabel || "",
     reason,
   });
   return true;
@@ -1109,7 +1148,7 @@ function openSimPosition(state, market, setup, scores) {
   const marginUsdt = notionalUsdt / profile.leverage;
   const marginCny = marginUsdt * rate;
   const feeCny = notionalUsdt * SIM_FEE_RATE * rate;
-  const exitPlan = buildSimExitPlan(side, latest, riskDistance, market.metrics, setup);
+  const exitPlan = buildSimExitPlan(side, latest, riskDistance, market.metrics, { ...setup, scores });
   state.balanceCny -= feeCny;
   state.position = {
     side,
@@ -1127,6 +1166,9 @@ function openSimPosition(state, market, setup, scores) {
     runnerTarget: exitPlan.runnerTarget,
     breakoutLevel: exitPlan.breakoutLevel,
     breakoutMode: exitPlan.breakoutMode,
+    exitProfile: exitPlan.exitProfile,
+    exitProfileCode: exitPlan.exitProfile?.code || "",
+    exitProfileLabel: exitPlan.exitProfile?.label || "",
     marketRegime: setup.marketRegimeLabel || setup.marketRegime || "",
     setupType: setup.setupType,
     expectedRR: setup.expectedRR,
@@ -1134,7 +1176,7 @@ function openSimPosition(state, market, setup, scores) {
     invalidPrice: setup.invalidPrice,
     targetPrices: setup.targetPrices,
     openedAt: new Date().toISOString(),
-    reason: `${reason} 模型：${setup.setupType}，预期盈亏比${Number(setup.expectedRR || 0).toFixed(2)}。杠杆${profile.leverage}x，${profile.label}，单笔风险上限约${(profile.lossPct * 100).toFixed(1)}%。采用分批止盈：第一档减${Math.round(SIM_TP1_CLOSE_PCT * 100)}%，第二档减${Math.round(SIM_TP2_CLOSE_PCT * 100)}%，剩余尾仓跟踪突破。`,
+    reason: `${reason} 模型：${setup.setupType}，预期盈亏比${Number(setup.expectedRR || 0).toFixed(2)}。杠杆${profile.leverage}x，${profile.label}，单笔风险上限约${(profile.lossPct * 100).toFixed(1)}%。止盈模式：${exitPlan.exitProfile?.label || "自适应止盈"}；${exitPlan.exitProfile?.reason || ""}`,
   };
   state.lastDecisionAt = new Date().toISOString();
   state.lastOpenSide = side;
@@ -1151,6 +1193,7 @@ function openSimPosition(state, market, setup, scores) {
     setupType: setup.setupType,
     expectedRR: setup.expectedRR,
     invalidPrice: setup.invalidPrice,
+    exitProfile: exitPlan.exitProfile?.label || "",
     reason: state.position.reason,
   });
 }
@@ -1238,10 +1281,15 @@ function runSimDecision(state, market) {
         simTouchedPrice(position, metrics, Number(position.runnerTarget || 0))
       );
       if (hitPartial) {
-        const label = nextTarget.id === "tp1" ? "第一止盈减仓" : "第二止盈减仓";
-        closeSimPartial(state, market, nextTarget, `${nextTarget.label || label}触发，先落袋一部分，剩余仓位继续看突破延伸。`, Number(nextTarget.price || metrics.latest));
+        const fullTarget = Number(nextTarget.closePct || 0) >= 0.999;
+        const label = fullTarget ? (nextTarget.id === "tp1" ? "第一止盈全平" : "第二止盈全平") : (nextTarget.id === "tp1" ? "第一止盈减仓" : "第二止盈减仓");
+        const exitProfileText = position.exitProfile?.label || "自适应止盈";
+        const partialReason = fullTarget
+          ? `${nextTarget.label || label}触发，当前止盈模式为“${exitProfileText}”，按计划全部平仓。`
+          : `${nextTarget.label || label}触发，当前止盈模式为“${exitProfileText}”，先落袋一部分，剩余仓位继续看突破延伸。`;
+        closeSimPartial(state, market, nextTarget, partialReason, Number(nextTarget.price || metrics.latest));
         decision = label;
-        reason = `${nextTarget.label || label}触发，已分批落袋，剩余仓位继续按突破管理。`;
+        reason = partialReason;
       } else if (hitRunner) {
         if (simTrendStillSupportsRunner(position, scores, metrics)) {
           const oldTarget = Number(position.runnerTarget || 0);
@@ -1268,15 +1316,15 @@ function runSimDecision(state, market) {
       } else {
         decision = "持仓";
         if (position.breakoutMode && position.breakoutLevel) {
-          reason = `已有仓位按突破管理执行：先看${position.breakoutLevel}整数关口是否站稳，TP1/TP2分批落袋，尾仓看延伸。`;
+          reason = `已有仓位按${position.exitProfile?.label || "突破管理"}执行：先看${position.breakoutLevel}整数关口是否站稳，再决定尾仓是否延伸。`;
         } else {
-          reason = "已有仓位未触及止盈止损，分批止盈计划继续执行。";
+          reason = `已有仓位未触及止盈止损，${position.exitProfile?.label || "自适应止盈"}计划继续执行。`;
         }
       }
       if (state.position) state.position.lastExitCheckAt = new Date().toISOString();
     }
   }
-  if (!state.position && !["止损平仓", "止盈平仓", "第一止盈减仓", "第二止盈减仓", "尾仓止盈", "尾仓平仓", "反向信号平仓"].includes(decision)) {
+  if (!state.position && !["止损平仓", "止盈平仓", "第一止盈减仓", "第二止盈减仓", "第一止盈全平", "第二止盈全平", "移动止盈平仓", "尾仓止盈", "尾仓平仓", "反向信号平仓"].includes(decision)) {
     const blockReason = simRiskCheck(state, scores, selectedSetup);
     if (blockReason) {
       decision = selectedSetup?.side === "flat" || /模型|盈亏比|中间位|混沌/.test(blockReason) ? "入场过滤未通过" : "风控禁止开仓";
@@ -1410,6 +1458,7 @@ async function simBrief(request, env) {
         blowupRestartCny: SIM_BLOWUP_RESTART_CNY,
         mode: "aggressive_sprint",
         objective: "7天内5万冲刺到10万，允许归零后重开模拟",
+        exitProfiles: SIM_EXIT_PROFILES,
       },
     });
   } catch (error) {
@@ -1566,6 +1615,101 @@ function policyCryptoEvents(now) {
   });
 }
 
+function marketMacroSignalEvents(now) {
+  const oneHour = 60 * 60 * 1000;
+  return [
+    {
+      title: "CME FedWatch利率概率观察",
+      country: "US",
+      category: "Rate Expectations",
+      type: "利率预期",
+      scheduledAt: new Date(now.getTime() + oneHour).toISOString(),
+      impact: "高",
+      forecast: "免费模式暂未接入实时概率数值；重点看降息概率是否上升、加息/更久高利率概率是否抬头。",
+      previous: "若降息概率上升，通常利好BTC；若维持高利率概率上升，通常压制BTC。",
+      actual: "",
+      status: "观察",
+      source: "CME FedWatch免费网页观察",
+      sourceUrls: ["https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html"],
+      btcDirection: "方向规则：降息概率明显上升偏利多BTC；维持高利率或加息概率上升偏利空BTC；概率接近不变则中性。",
+    },
+    {
+      title: "美国财政部美债拍卖与再融资观察",
+      country: "US",
+      category: "Treasury Auctions",
+      type: "美债流动性",
+      scheduledAt: new Date(now.getTime() + 2 * oneHour).toISOString(),
+      impact: "中高",
+      forecast: "关注短债/长债拍卖需求、收益率尾部和季度再融资公告；弱拍卖会推高收益率并压制风险资产。",
+      previous: "强拍卖代表流动性承接较好；弱拍卖代表期限溢价和收益率压力上升。",
+      actual: "",
+      status: "观察",
+      source: "U.S. Treasury auction schedule",
+      sourceUrls: ["https://home.treasury.gov/policy-issues/financing-the-government/quarterly-refunding", "https://www.treasurydirect.gov/auctions/upcoming/"],
+      btcDirection: "方向规则：拍卖需求强、收益率回落偏利多BTC；拍卖需求弱、收益率上行偏利空BTC。",
+    },
+    {
+      title: "美元指数与美债收益率联动观察",
+      country: "US",
+      category: "Dollar and Yields",
+      type: "美元/美债",
+      scheduledAt: new Date(now.getTime() + 3 * oneHour).toISOString(),
+      impact: "中高",
+      forecast: "免费模式先作为规则源；后续可接FRED或市场数据API自动量化。",
+      previous: "DXY和10年美债收益率同涨，通常压制BTC；同跌，通常利好BTC。",
+      actual: "",
+      status: "观察",
+      source: "FRED / Treasury / market proxy",
+      sourceUrls: ["https://fred.stlouisfed.org/series/DGS10", "https://home.treasury.gov/resource-center/data-chart-center/interest-rates"],
+      btcDirection: "方向规则：美元和美债收益率同步走强偏利空BTC；同步走弱偏利多BTC；背离时优先看BTC资金费率和ETF流向。",
+    },
+  ].filter((event) => {
+    const t = new Date(event.scheduledAt);
+    const until = new Date(now.getTime() + UPCOMING_MACRO_WINDOW_MS);
+    return t >= now && t <= until;
+  });
+}
+
+function cryptoFlowEvents(now) {
+  const fourHours = 4 * 60 * 60 * 1000;
+  return [
+    {
+      title: "美国现货BTC ETF资金流观察",
+      country: "US",
+      category: "BTC ETF Flow",
+      type: "ETF资金流",
+      scheduledAt: new Date(now.getTime() + fourHours).toISOString(),
+      impact: "高",
+      forecast: "免费模式暂未接入逐只ETF实时净流入；重点看连续净流入/净流出是否改变现货买盘。",
+      previous: "连续净流入通常增强现货买盘；连续净流出通常削弱反弹。",
+      actual: "",
+      status: "观察",
+      source: "ETF公开流量聚合源",
+      sourceUrls: ["https://farside.co.uk/btc/"],
+      btcDirection: "方向规则：ETF连续净流入偏利多BTC；连续净流出偏利空BTC；单日小幅波动中性。",
+    },
+    {
+      title: "稳定币流动性与交易所资金观察",
+      country: "Global",
+      category: "Stablecoin Liquidity",
+      type: "稳定币流动性",
+      scheduledAt: new Date(now.getTime() + 5 * 60 * 60 * 1000).toISOString(),
+      impact: "中高",
+      forecast: "免费模式先使用规则源；后续可接DefiLlama稳定币供应、交易所净流入等免费接口。",
+      previous: "稳定币供应扩张和交易所买盘增强通常支撑BTC；稳定币收缩代表场内流动性偏紧。",
+      actual: "",
+      status: "观察",
+      source: "DefiLlama stablecoins / exchange flow proxy",
+      sourceUrls: ["https://defillama.com/stablecoins"],
+      btcDirection: "方向规则：稳定币供应扩张偏利多BTC；供应收缩或交易所抛压增强偏利空BTC。",
+    },
+  ].filter((event) => {
+    const t = new Date(event.scheduledAt);
+    const until = new Date(now.getTime() + UPCOMING_MACRO_WINDOW_MS);
+    return t >= now && t <= until;
+  });
+}
+
 function dedupeMacroEvents(events) {
   const seen = new Set();
   const deduped = [];
@@ -1607,8 +1751,10 @@ async function macroBrief(request, env) {
   }
   const officialEvents = officialMacroEvents(now);
   const cryptoPolicyEvents = policyCryptoEvents(now);
-  if (officialEvents.length || cryptoPolicyEvents.length) sources.push(FREE_MACRO_SOURCE);
-  const combined = dedupeMacroEvents([...events, ...officialEvents, ...cryptoPolicyEvents]);
+  const rateAndLiquidityEvents = marketMacroSignalEvents(now);
+  const cryptoFlowSignalEvents = cryptoFlowEvents(now);
+  if (officialEvents.length || cryptoPolicyEvents.length || rateAndLiquidityEvents.length || cryptoFlowSignalEvents.length) sources.push(FREE_MACRO_SOURCE);
+  const combined = dedupeMacroEvents([...events, ...officialEvents, ...cryptoPolicyEvents, ...rateAndLiquidityEvents, ...cryptoFlowSignalEvents]);
   const upcomingEvents = combined.filter((event) => {
     const t = new Date(event.scheduledAt);
     return !event.placeholder && t >= now && t <= until;
@@ -1644,6 +1790,8 @@ async function macroBrief(request, env) {
     upcomingEvents,
     recentReleasedEvents,
     policyCryptoEvents: cryptoPolicyEvents,
+    rateAndLiquidityEvents,
+    cryptoFlowEvents: cryptoFlowSignalEvents,
     warnings,
     macroStatus: {
       tradingEconomicsConfigured: Boolean(env.TRADING_ECONOMICS_KEY),
@@ -1652,6 +1800,7 @@ async function macroBrief(request, env) {
       recentKeepHours: RECENT_MACRO_KEEP_MS / (60 * 60 * 1000),
       upcomingWindowHours: UPCOMING_MACRO_WINDOW_MS / (60 * 60 * 1000),
       policyCryptoKeywords: POLICY_CRYPTO_KEYWORDS,
+      sourceCategories: ["经济数据", "美联储", "利率预期", "美债流动性", "美元/美债", "ETF资金流", "稳定币流动性", "加密政策"],
     },
   });
 }

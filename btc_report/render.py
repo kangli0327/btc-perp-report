@@ -1779,8 +1779,9 @@ def render_report(
       setText('simTpSl', simTpSlText(p));
       setText('simRegime', payload.marketRegime?.label || p?.marketRegime || '-');
       const setup = payload.selectedSetup || p || {{}};
+      const exitProfileText = p?.exitProfile?.label || p?.exitProfileLabel || setup.exitProfile || '';
       const setupText = setup.setupType && setup.setupType !== '无合格模型'
-        ? `${{setup.setupType}} / RR ${{Number(setup.expectedRR || 0).toFixed(2)}}`
+        ? `${{setup.setupType}} / RR ${{Number(setup.expectedRR || 0).toFixed(2)}}${{exitProfileText ? ' / ' + exitProfileText : ''}}`
         : (setup.entryReason || '暂无合格模型');
       setText('simSetup', setupText);
       setText('simDecision', `本次决策：${{payload.decision || '等待'}} · ${{payload.decisionReason || '-'}}`);
@@ -1809,7 +1810,7 @@ def render_report(
             <td class="${{simPnlClass(record.pnlCny)}}">${{Number(record.pnlCny || 0) >= 0 ? '+' : ''}}${{fmtCny(Number(record.pnlCny || 0))}}</td>
             <td>${{fmtCny(Number(record.balanceCny || 0))}}</td>
             <td>${{record.marketRegime || '-'}}</td>
-            <td>${{record.setupType ? record.setupType + ' / RR ' + Number(record.expectedRR || 0).toFixed(2) : '-'}}</td>
+            <td>${{record.setupType ? record.setupType + ' / RR ' + Number(record.expectedRR || 0).toFixed(2) + (record.exitProfile ? ' / ' + record.exitProfile : '') : '-'}}</td>
             <td>${{record.invalidPrice ? fmtPrice(Number(record.invalidPrice)) : '-'}}</td>
             <td>${{record.reason || '-'}}</td>
           </tr>`).join('') : '<tr><td colspan="13">暂无模拟盘记录。</td></tr>';

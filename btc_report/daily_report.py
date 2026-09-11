@@ -100,7 +100,7 @@ def _macro_focus(macro_brief: MacroBrief, macro_payload: dict[str, Any] | None) 
         recent = [x for x in macro_payload.get("recentReleasedEvents", []) if not x.get("placeholder")]
 
     if upcoming:
-        first = upcoming[0]
+        first = next((x for x in upcoming if x.get("status") != "观察" and x.get("impact") in {"高", "中高"}), upcoming[0])
         focus = f"{first.get('title', '宏观事件')}｜{first.get('impact', '-') }影响｜{first.get('status', '-')}"
         judgment = first.get("btcDirection") or "待公布，公布前后优先控制杠杆。"
     elif macro_brief.events:
