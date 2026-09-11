@@ -62,6 +62,7 @@ def render_report(
     advice: Advice,
     macro_brief: MacroBrief,
     archive_name: str,
+    daily_report_html: str = "",
 ) -> str:
     warnings = indicators.warnings + macro_brief.warnings + [x for x in [position.source_warning, preference.source_warning] if x]
     warning_html = "".join(f"<li>{html.escape(w)}</li>" for w in warnings) or "<li>数据源状态正常。</li>"
@@ -258,6 +259,22 @@ def render_report(
     ul {{ padding-left:20px; margin:8px 0 0; }} li {{ margin:6px 0; }}
     canvas {{ width:100%; height:260px; display:block; }}
     .small {{ color:var(--muted); font-size:13px; }}
+    .daily-report {{ background:#0b1220; color:#f8fafc; border:1px solid #263449; border-radius:12px; padding:16px; margin-bottom:12px; box-shadow:0 10px 30px rgba(15,23,42,.12); }}
+    .daily-head {{ display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }}
+    .daily-head h2 {{ margin:0; font-size:clamp(32px,9vw,52px); line-height:1.02; letter-spacing:0; }}
+    .daily-time {{ color:#94a3b8; font-size:14px; margin-top:4px; }}
+    .daily-badge {{ border:1px solid #475569; border-radius:999px; padding:4px 10px; color:#fde68a; white-space:nowrap; font-size:13px; }}
+    .daily-verdict {{ margin:14px 0 12px; padding:14px; border:1px solid #7f1d1d; border-radius:10px; color:#fecaca; font-size:clamp(22px,6vw,34px); line-height:1.16; font-weight:850; background:#2a1218; }}
+    .daily-price-row {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }}
+    .daily-price,.daily-levels {{ border:1px solid #263449; border-radius:10px; padding:12px; background:#101b2b; }}
+    .daily-price {{ color:#6ee7b7; font-size:24px; font-weight:850; }}
+    .daily-levels {{ color:#cbd5e1; font-weight:700; }}
+    .daily-list {{ display:grid; gap:10px; }}
+    .daily-list div {{ border-top:1px solid #263449; padding-top:10px; }}
+    .daily-list strong {{ color:#f8fafc; }}
+    .daily-list p {{ margin:4px 0 0; color:#cbd5e1; }}
+    .daily-links {{ display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; color:#94a3b8; }}
+    .daily-links a {{ color:#bfdbfe; background:#132238; border:1px solid #263449; border-radius:999px; padding:3px 9px; text-decoration:none; font-size:13px; }}
     .plan {{ border-left:4px solid #475467; }}
     .market-price {{ text-align:center; padding:18px 14px 20px; }}
     .market-price .label {{ font-size:14px; }}
@@ -283,7 +300,7 @@ def render_report(
     .sim-profit {{ color:var(--good); font-weight:760; }}
     .sim-loss {{ color:var(--danger); font-weight:760; }}
     footer {{ padding:18px 14px 30px; color:var(--muted); text-align:center; font-size:13px; }}
-    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .reason-grid {{ grid-template-columns:1fr; }} .sim-grid {{ grid-template-columns:repeat(2,1fr); }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
+    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .daily-price-row {{ grid-template-columns:1fr; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .reason-grid {{ grid-template-columns:1fr; }} .sim-grid {{ grid-template-columns:repeat(2,1fr); }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
     @media (max-width:430px) {{ .contract-title {{ font-size:23px; }} .position-head {{ grid-template-columns:1fr; }} .pnl-box {{ text-align:left; }} .position-grid {{ grid-template-columns:repeat(2,1fr); }} }}
   </style>
 </head>
@@ -294,6 +311,7 @@ def render_report(
     <div class="meta" id="liveFetchMeta">实时抓取状态：等待浏览器执行</div>
   </header>
   <main>
+    {daily_report_html}
     <section class="sprint">
       <h2>冲刺账户模式</h2>
       <div class="sprint-top">
@@ -1609,6 +1627,8 @@ def render_report(
       setText('simpleLongEntry', plan.longEntry);
       setText('simpleMarginBudget', plan.margin);
       setText('simpleTriggerStatus', triggerStatusText(hasPosition ? plan : {{ side: 'flat' }}, latest));
+      setText('dailyBtcPrice', `BTC 标记价 ${{fmtPrice(latest)}} USDT`);
+      setText('dailyKeyLevels', `压力 ${{fmtPrice(resistance)}}｜支撑 ${{fmtPrice(support)}}｜失守 ${{fmtPrice(support - Math.max(Number(strategyConfig.atr15m || 0), latest * 0.004))}}`);
       const context = side === 'flat'
         ? `无仓观察计划 · 支撑 ${{fmtPrice(support)}} · 阻力 ${{fmtPrice(resistance)}} · 行情源：${{source}}`
         : `计划锁定时间 ${{plan.createdAt || '-'}} · 锁定依据：开仓均价 ${{fmtPrice(entry)}} / 支撑快照 ${{fmtPrice(plan.supportSnapshot)}} / 阻力快照 ${{fmtPrice(plan.resistanceSnapshot)}} / ATR ${{fmtPrice(plan.atrSnapshot)}} · 强平 ${{fmtPrice(liq)}} · 距强平 ${{Number.isFinite(liqGap) ? liqGap.toFixed(2) + '%' : '-'}} · 行情源：${{source}}`;
@@ -1653,6 +1673,11 @@ def render_report(
       setText('weeklyRiskStatus', weeklyStatus);
       const hedgeText = account.hasHedgedPositions ? ' · 检测到双向持仓，显示主仓位' : '';
       setText('accountRefreshState', `成功 · ${{fmtTime(new Date(syncedAt))}}${{hedgeText}}`);
+      const dailyPosition = account.position ? account.position : null;
+      const dailySide = dailyPosition?.side === 'long' ? '多单' : dailyPosition?.side === 'short' ? '空单' : '无仓';
+      setText('dailyAccount', dailyPosition
+        ? `真实账户：权益约 ${{fmtCny(equityCny)}}｜${{Number(dailyPosition.quantityBtc || 0)}} BTC ${{dailySide}}｜${{Number(dailyPosition.leverage || 100)}}x｜浮盈亏 ${{fmtMoney2(Number(dailyPosition.uplUsdt || 0))}} USDT`
+        : `真实账户：权益约 ${{fmtCny(equityCny)}}｜当前无BTC永续主仓位`);
       if (account.position) {{
         const p = account.position;
         const side = p.side || positionConfig.activeSide;
@@ -1759,6 +1784,9 @@ def render_report(
         : (setup.entryReason || '暂无合格模型');
       setText('simSetup', setupText);
       setText('simDecision', `本次决策：${{payload.decision || '等待'}} · ${{payload.decisionReason || '-'}}`);
+      setText('dailySim', p
+        ? `AI模拟盘：权益 ${{fmtCny(Number(payload.equityCny || 0))}}｜${{simSideText(p.side)}} ${{Number(p.quantityBtc || 0).toFixed(4)}} BTC｜${{payload.marketRegime?.label || p.marketRegime || '-'}}｜${{payload.decision || '等待'}}`
+        : `AI模拟盘：权益 ${{fmtCny(Number(payload.equityCny || 0))}}｜空仓｜${{payload.marketRegime?.label || '-'}}｜${{payload.decision || '等待'}}`);
       const simSourceText = payload.market?.source || payload.marketSource || '模拟行情';
       const simWarningText = payload.sourceWarning || payload.market?.sourceWarning || '';
       const scheduledText = payload.lastScheduledRunAt ? ` · 后台 ${{fmtTime(new Date(payload.lastScheduledRunAt))}}` : ' · 后台等待首次运行';
@@ -1830,6 +1858,12 @@ def render_report(
         setText('macroForecast', v5MacroDirectionSummary(recent.length ? recent : upcoming.length ? upcoming : events));
         setText('macroWindow', `窗口：${{fmtTime(new Date(payload.windowStart))}} - ${{fmtTime(new Date(payload.windowEnd))}} 北京时间；已公布关键数据保留7天`);
         setText('macroWarnings', warnings.length ? `数据源状态：${{warnings.join('；')}}` : `数据源状态：${{macroMode}}正常`);
+        const dailyFocusEvent = upcoming[0] || recent[0] || events[0];
+        if (dailyFocusEvent) {{
+          setText('dailyMacroFocus', `宏观重点：${{dailyFocusEvent.title}}｜${{dailyFocusEvent.impact || '-'}}影响｜${{dailyFocusEvent.status || '-'}}`);
+          setText('dailyMacroJudgment', `宏观判断：${{dailyFocusEvent.btcDirection || '待公布，公布前后优先控制杠杆。'}}`);
+        }}
+        setText('dailyRisk', `风险提示：日报为每日08:00框架，盘中以实时行情、账户和宏观模块校准。数据源：${{macroMode}}；刷新 ${{fmtTime(new Date(payload.updatedAt || Date.now()))}}`);
         const list = document.getElementById('macroEventsList');
         if (list) list.innerHTML = upcoming.length ? upcoming.map(renderMacroEvent).join('') : '<li>未来7天暂无已接入的高影响宏观事件。</li>';
         const recentList = document.getElementById('recentMacroEventsList');

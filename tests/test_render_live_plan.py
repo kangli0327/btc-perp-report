@@ -65,6 +65,11 @@ class RenderLivePlanTest(unittest.TestCase):
         self.assertIn("预警，不是确认", source)
         self.assertIn("短周期RSI连续回升", source)
         self.assertIn("点位不自动重算", source)
+        self.assertIn("daily_report_html", source)
+        self.assertIn("{daily_report_html}", source)
+        self.assertIn("dailyBtcPrice", source)
+        self.assertIn("dailyMacroFocus", source)
+        self.assertIn("dailySim", source)
 
 
 if __name__ == "__main__":
