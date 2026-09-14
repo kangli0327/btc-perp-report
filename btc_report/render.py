@@ -287,6 +287,20 @@ def render_report(
     .reason-card {{ background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; }}
     .reason-title {{ font-weight:780; margin-bottom:6px; color:#102a43; }}
     .reason-card p {{ margin:0; color:#344054; }}
+    .observation-list {{ list-style:none; padding:0; display:grid; gap:10px; }}
+    .observation-card {{ border:1px solid var(--line); border-radius:8px; background:#fff; padding:12px; }}
+    .observation-head {{ display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }}
+    .observation-title {{ font-weight:800; color:#102a43; }}
+    .quality-badge {{ border-radius:999px; padding:2px 8px; background:#eef2ff; color:#3730a3; font-size:12px; white-space:nowrap; }}
+    .quality-badge.unavailable {{ background:#fee4e2; color:#b42318; }}
+    .quality-badge.threshold_only {{ background:#fef0c7; color:#92400e; }}
+    .quality-badge.delayed {{ background:#e8f3f1; color:#0b635d; }}
+    .metric-grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-top:10px; }}
+    .metric-box {{ background:#f8fafc; border:1px solid #e4e7ec; border-radius:8px; padding:8px; }}
+    .metric-label {{ color:#667085; font-size:12px; }}
+    .metric-value {{ color:#101828; font-size:17px; font-weight:800; margin-top:2px; overflow-wrap:anywhere; }}
+    .metric-sub {{ color:#667085; font-size:12px; margin-top:2px; line-height:1.35; }}
+    .threshold-line,.signal-line {{ margin-top:8px; color:#475467; font-size:13px; line-height:1.45; }}
     .sim-panel {{ border-left:4px solid #0f766e; }}
     .sim-actions {{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 12px; }}
     .sim-actions button {{ min-height:36px; border:1px solid #98a2b3; border-radius:8px; background:#fff; color:#17202a; font-weight:760; padding:6px 12px; }}
@@ -309,7 +323,7 @@ def render_report(
     .sim-profit {{ color:var(--good); font-weight:760; }}
     .sim-loss {{ color:var(--danger); font-weight:760; }}
     footer {{ padding:18px 14px 30px; color:var(--muted); text-align:center; font-size:13px; }}
-    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .daily-price-row {{ grid-template-columns:1fr; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .reason-grid {{ grid-template-columns:1fr; }} .sim-grid {{ grid-template-columns:repeat(2,1fr); }} .sim-records {{ display:none; }} .sim-record-cards {{ display:grid; }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
+    @media (max-width:720px) {{ main {{ padding:10px; }} .grid {{ gap:10px; }} .span-4,.span-6 {{ grid-column:span 12; }} section,.tile {{ padding:12px; }} .headline {{ font-size:20px; }} canvas {{ height:220px; }} .daily-price-row {{ grid-template-columns:1fr; }} .sprint-top {{ grid-template-columns:1fr; }} .sprint-status {{ font-size:25px; }} .sprint-grid {{ grid-template-columns:repeat(2,1fr); }} .reason-grid {{ grid-template-columns:1fr; }} .metric-grid {{ grid-template-columns:1fr; }} .sim-grid {{ grid-template-columns:repeat(2,1fr); }} .sim-records {{ display:none; }} .sim-record-cards {{ display:grid; }} .position-card {{ padding:14px; }} .position-head {{ gap:8px; margin-bottom:20px; }} .contract-title {{ font-size:25px; }} .okx-badge {{ font-size:18px; min-height:30px; padding:3px 9px; }} .pnl-box {{ min-width:136px; }} .pnl-label,.okx-label {{ font-size:13px; }} .pnl-value,.okx-value {{ font-size:19px; }} .position-grid {{ column-gap:14px; row-gap:22px; }} }}
     @media (max-width:430px) {{ .contract-title {{ font-size:23px; }} .position-head {{ grid-template-columns:1fr; }} .pnl-box {{ text-align:left; }} .position-grid {{ grid-template-columns:repeat(2,1fr); }} }}
   </style>
 </head>
@@ -437,7 +451,7 @@ def render_report(
       <h3>最近7天关键消息</h3>
       <ul id="recentMacroEventsList"></ul>
       <h3>持续观察指标</h3>
-      <ul id="macroObservationList"><li>等待实时宏观观察指标刷新。</li></ul>
+      <ul class="observation-list" id="macroObservationList"><li>等待实时宏观观察指标刷新。</li></ul>
     </section>
 
     <section>
@@ -1746,12 +1760,41 @@ def render_report(
     }}
     function renderObservationEvent(event) {{
       const eventType = event.type || '观察指标';
+      const quality = event.dataQuality || 'threshold_only';
+      const qualityText = {{
+        live: '实时',
+        delayed: '延迟',
+        threshold_only: '阈值参考',
+        unavailable: '数据不可用',
+      }}[quality] || quality;
+      const metrics = Array.isArray(event.metrics) ? event.metrics : [];
+      const metricHtml = metrics.length ? metrics.map(metric => `
+        <div class="metric-box">
+          <div class="metric-label">${{metric.label || '-'}}</div>
+          <div class="metric-value">${{metric.display || metric.value || '-'}}</div>
+          <div class="metric-sub">前值：${{metric.previous || '前值建立中'}}</div>
+          <div class="metric-sub">变化：${{metric.change || '前值建立中'}}</div>
+          <div class="metric-sub">临界：${{metric.threshold || '-'}}</div>
+        </div>`).join('') : `
+        <div class="metric-box">
+          <div class="metric-label">当前值</div>
+          <div class="metric-value">${{event.actual || '未接入'}}</div>
+          <div class="metric-sub">前值：${{event.previous || '前值建立中'}}</div>
+          <div class="metric-sub">临界：${{(event.thresholds || [event.forecast || '-'])[0]}}</div>
+        </div>`;
+      const thresholds = Array.isArray(event.thresholds) && event.thresholds.length ? event.thresholds.join('；') : (event.forecast || '-');
       return `
-        <li>
-          <strong>${{event.title}}</strong>
-          <br><span class="small">类型：${{eventType}} · 更新频率：${{event.updateFrequency || '持续观察'}} · 来源：${{event.source}} · 影响：${{event.impact}}</span>
-          <br><span class="small"><strong>观察重点：</strong>${{event.forecast || '-'}}</span>
-          <br><span class="small"><strong>BTC方向：</strong>${{event.btcDirection || '-'}}</span>
+        <li class="observation-card">
+          <div class="observation-head">
+            <div>
+              <div class="observation-title">${{event.title}}</div>
+              <div class="small">类型：${{eventType}} · 更新：${{event.updateFrequency || '持续观察'}} · 来源：${{event.source}} · 影响：${{event.impact}}</div>
+            </div>
+            <span class="quality-badge ${{quality}}">${{qualityText}}</span>
+          </div>
+          <div class="metric-grid">${{metricHtml}}</div>
+          <div class="threshold-line"><strong>关键临界值：</strong>${{thresholds}}</div>
+          <div class="signal-line"><strong>BTC方向：</strong>${{event.numericSignal || event.btcDirection || '-'}}</div>
         </li>`;
     }}
     function simSideText(side) {{

@@ -118,7 +118,21 @@ def _macro_focus(macro_brief: MacroBrief, macro_payload: dict[str, Any] | None) 
         focus += f"；已公布：{last.get('title', '-')}"
         judgment = last.get("btcDirection") or judgment
     if observations:
-        focus += f"；持续观察：{observations[0].get('title', '-')}"
+        first_obs = observations[0]
+        metrics = first_obs.get("metrics") or []
+        metric_bits = []
+        for metric in metrics[:2]:
+            label = metric.get("label") or "指标"
+            value = metric.get("display") or metric.get("value") or "-"
+            previous = metric.get("previous") or "前值建立中"
+            threshold = metric.get("threshold") or "-"
+            metric_bits.append(f"{label}{value}，前值{previous}，临界{threshold}")
+        if metric_bits:
+            focus += f"；持续观察：{first_obs.get('title', '-')}｜{'；'.join(metric_bits)}"
+        else:
+            focus += f"；持续观察：{first_obs.get('title', '-')}"
+        if first_obs.get("numericSignal"):
+            judgment = f"{judgment}；持续观察结论：{first_obs.get('numericSignal')}"
     return focus, judgment
 
 

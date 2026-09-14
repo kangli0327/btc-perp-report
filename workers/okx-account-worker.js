@@ -7,6 +7,7 @@ const UPCOMING_MACRO_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const RECENT_MACRO_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 const FREE_MACRO_SOURCE = "official-free";
 const SIM_KV_KEY = "SIM_ACCOUNT_STATE_V1";
+const MACRO_OBS_KV_KEY = "MACRO_OBSERVATION_SNAPSHOT_V1";
 const SIM_INITIAL_CNY = 50000;
 const SIM_TARGET_CNY = 100000;
 const SIM_SPRINT_DAYS = 7;
@@ -232,6 +233,47 @@ async function binancePublic(path, cacheTtl = 10) {
   }
   if (!response.ok) throw new Error(`Binance public ${path} failed: ${payload.msg || response.status}`);
   return payload;
+}
+
+async function fetchJsonOptional(url, fallback = null, cacheTtl = 120, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "btc-perp-report/1.0" },
+      cf: { cacheTtl },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchTextOptional(url, fallback = "", cacheTtl = 300, timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "btc-perp-report/1.0" },
+      cf: { cacheTtl },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.text();
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function numberOrNull(value) {
+  const number = Number(String(value ?? "").replace(/[$,%\s,]/g, ""));
+  return Number.isFinite(number) ? number : null;
 }
 
 function closes(candles) {
@@ -1615,9 +1657,154 @@ function policyCryptoEvents(now) {
   });
 }
 
-function marketMacroSignalEvents(now) {
+async function readMacroObservationSnapshot(env) {
+  if (!env.ACCOUNT_KV) return {};
+  try {
+    const raw = await env.ACCOUNT_KV.get(MACRO_OBS_KV_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeMacroObservationSnapshot(env, events) {
+  if (!env.ACCOUNT_KV) return;
+  const snapshot = {};
+  for (const event of events || []) {
+    snapshot[event.id || event.title] = {
+      updatedAt: event.updatedAt,
+      metrics: (event.metrics || []).map((metric) => ({
+        key: metric.key,
+        label: metric.label,
+        value: metric.value,
+        unit: metric.unit,
+        display: metric.display,
+      })),
+    };
+  }
+  await env.ACCOUNT_KV.put(MACRO_OBS_KV_KEY, JSON.stringify(snapshot));
+}
+
+function priorMetric(previousSnapshot, eventId, metricKey) {
+  const event = previousSnapshot?.[eventId];
+  const metric = (event?.metrics || []).find((item) => item.key === metricKey);
+  return metric || null;
+}
+
+function formatMacroValue(value, unit = "", decimals = 2) {
+  if (value === null || value === undefined || value === "") return "未接入";
+  if (typeof value === "string") return value;
+  if (!Number.isFinite(Number(value))) return "未接入";
+  const number = Number(value);
+  if (unit === "亿美元") return `${(number / 100000000).toFixed(decimals)}亿美元`;
+  if (unit === "十亿美元") return `${(number / 1000000000).toFixed(decimals)}十亿美元`;
+  if (unit === "%") return `${number.toFixed(decimals)}%`;
+  if (unit === "bp") return `${number >= 0 ? "+" : ""}${number.toFixed(decimals)}bp`;
+  return `${number.toFixed(decimals)}${unit || ""}`;
+}
+
+function macroMetric({ key, label, value, unit = "", previousMetric = null, threshold = "", decimals = 2, updatedAt = "" }) {
+  const priorValue = previousMetric && Number.isFinite(Number(previousMetric.value)) ? Number(previousMetric.value) : null;
+  const numeric = Number.isFinite(Number(value)) ? Number(value) : null;
+  const change = numeric !== null && priorValue !== null ? numeric - priorValue : null;
+  return {
+    key,
+    label,
+    value: numeric === null ? value : numeric,
+    unit,
+    display: formatMacroValue(numeric === null ? value : numeric, unit, decimals),
+    previous: priorValue === null ? (previousMetric?.display || "前值建立中") : formatMacroValue(priorValue, unit, decimals),
+    change: change === null ? "前值建立中" : formatMacroValue(change, unit === "%" ? "百分点" : unit, decimals),
+    threshold,
+    updatedAt,
+  };
+}
+
+async function yahooChartMetric(symbol) {
+  const encoded = encodeURIComponent(symbol);
+  const payload = await fetchJsonOptional(`https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?range=5d&interval=1d`, null, 300);
+  const result = payload?.chart?.result?.[0];
+  const quote = result?.indicators?.quote?.[0] || {};
+  const closes = (quote.close || []).map((item) => Number(item)).filter((item) => Number.isFinite(item));
+  const latest = closes[closes.length - 1] ?? null;
+  const previous = closes[closes.length - 2] ?? null;
+  return { latest, previous };
+}
+
+async function stablecoinSupplyMetric() {
+  const payload = await fetchJsonOptional("https://stablecoins.llama.fi/stablecoins?includePrices=true", null, 900);
+  const assets = Array.isArray(payload?.peggedAssets) ? payload.peggedAssets : [];
+  let current = 0;
+  let prevDay = 0;
+  let prevWeek = 0;
+  for (const asset of assets) {
+    current += Number(asset?.circulating?.peggedUSD || 0);
+    prevDay += Number(asset?.circulatingPrevDay?.peggedUSD || 0);
+    prevWeek += Number(asset?.circulatingPrevWeek?.peggedUSD || 0);
+  }
+  if (!current) return null;
+  return {
+    current,
+    oneDayPct: prevDay ? (current / prevDay - 1) * 100 : null,
+    sevenDayPct: prevWeek ? (current / prevWeek - 1) * 100 : null,
+  };
+}
+
+async function treasuryAuctionMetric(now) {
+  const today = now.toISOString().slice(0, 10);
+  const url = `https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/od/auctions_query?filter=auction_date:gte:${today}&sort=auction_date&page[size]=5`;
+  const payload = await fetchJsonOptional(url, null, 3600);
+  const item = Array.isArray(payload?.data) ? payload.data[0] : null;
+  if (!item) return null;
+  return {
+    auctionDate: item.auction_date || item.record_date || "",
+    securityTerm: item.security_term || item.security_type || "美债",
+    offeringAmount: numberOrNull(item.offering_amt || item.offering_amount),
+    bidToCover: numberOrNull(item.bid_to_cover_ratio),
+    highYield: numberOrNull(item.high_yield || item.high_investment_rate),
+  };
+}
+
+async function btcEtfFlowMetric() {
+  const html = await fetchTextOptional("https://farside.co.uk/btc/", "", 1800);
+  if (!html) return null;
+  const rows = [...html.matchAll(/<tr[\s\S]*?<\/tr>/gi)].map((match) => match[0]);
+  const dailyValues = [];
+  for (const row of rows) {
+    const text = row.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    if (!/\d{1,2}\s[A-Za-z]{3}|\d{1,2}\/\d{1,2}/.test(text)) continue;
+    const numbers = [...text.matchAll(/-?\$?\d[\d,]*(?:\.\d+)?/g)]
+      .map((match) => numberOrNull(match[0]))
+      .filter((value) => value !== null);
+    const total = numbers[numbers.length - 1];
+    if (Number.isFinite(total)) dailyValues.push(total * 1000000);
+    if (dailyValues.length >= 3) break;
+  }
+  if (!dailyValues.length) return null;
+  return {
+    latest: dailyValues[0],
+    previous: dailyValues[1] ?? null,
+    threeDay: dailyValues.reduce((sum, value) => sum + value, 0),
+  };
+}
+
+async function marketMacroSignalEvents(now, env, previousSnapshot) {
+  const updatedAt = now.toISOString();
+  const [dxy, tnx, auction] = await Promise.all([
+    yahooChartMetric("DX-Y.NYB"),
+    yahooChartMetric("^TNX"),
+    treasuryAuctionMetric(now),
+  ]);
+  const dxyChangePct = dxy.latest && dxy.previous ? (dxy.latest / dxy.previous - 1) * 100 : null;
+  const tnxYield = tnx.latest ? (tnx.latest > 20 ? tnx.latest / 10 : tnx.latest) : null;
+  const tnxPrevYield = tnx.previous ? (tnx.previous > 20 ? tnx.previous / 10 : tnx.previous) : null;
+  const tnxChangeBp = tnxYield !== null && tnxPrevYield !== null ? (tnxYield - tnxPrevYield) * 100 : null;
+  const dollarYieldSignal = dxyChangePct !== null && tnxChangeBp !== null
+    ? (dxyChangePct >= 0.5 && tnxChangeBp >= 8 ? "偏利空BTC：美元和美债收益率同步走强。" : dxyChangePct <= -0.5 && tnxChangeBp <= -8 ? "偏利多BTC：美元和美债收益率同步走弱。" : "中性：美元与美债未同时触发关键临界值。")
+    : "数据源不可用：先按阈值观察，等待下一轮刷新。";
   return [
     {
+      id: "fedwatch-rate-probability",
       title: "CME FedWatch利率概率观察",
       country: "US",
       category: "Rate Expectations",
@@ -1625,15 +1812,24 @@ function marketMacroSignalEvents(now) {
       scheduledAt: null,
       updateFrequency: "实时变化",
       impact: "高",
-      forecast: "免费模式暂未接入实时概率数值；重点看降息概率是否上升、加息/更久高利率概率是否抬头。",
-      previous: "若降息概率上升，通常利好BTC；若维持高利率概率上升，通常压制BTC。",
+      forecast: "观察降息/维持/加息概率是否相对前值快速变化。",
+      previous: "前值由CME公开页面抓取能力决定；未抓到时只显示阈值参考。",
       actual: "",
       status: "观察",
       source: "CME FedWatch免费网页观察",
       sourceUrls: ["https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html"],
-      btcDirection: "方向规则：降息概率明显上升偏利多BTC；维持高利率或加息概率上升偏利空BTC；概率接近不变则中性。",
+      dataQuality: "threshold_only",
+      numericSignal: "阈值参考",
+      updatedAt,
+      metrics: [
+        macroMetric({ key: "cutProbability", label: "降息概率", value: "公开页暂未稳定抓取", unit: "%", previousMetric: priorMetric(previousSnapshot, "fedwatch-rate-probability", "cutProbability"), threshold: "较前值上升10个百分点以上：偏利多BTC", updatedAt }),
+        macroMetric({ key: "hawkishProbability", label: "维持/加息概率", value: "公开页暂未稳定抓取", unit: "%", previousMetric: priorMetric(previousSnapshot, "fedwatch-rate-probability", "hawkishProbability"), threshold: "较前值上升10个百分点以上：偏利空BTC", updatedAt }),
+      ],
+      thresholds: ["降息概率较前值+10个百分点：偏利多", "维持高利率/加息概率较前值+10个百分点：偏利空"],
+      btcDirection: "阈值参考：降息概率明显上升偏利多BTC；维持高利率或加息概率上升偏利空BTC。",
     },
     {
+      id: "treasury-auction-pressure",
       title: "美国财政部美债拍卖与再融资观察",
       country: "US",
       category: "Treasury Auctions",
@@ -1641,15 +1837,25 @@ function marketMacroSignalEvents(now) {
       scheduledAt: null,
       updateFrequency: "按拍卖日程/季度再融资公告更新",
       impact: "中高",
-      forecast: "关注短债/长债拍卖需求、收益率尾部和季度再融资公告；弱拍卖会推高收益率并压制风险资产。",
-      previous: "强拍卖代表流动性承接较好；弱拍卖代表期限溢价和收益率压力上升。",
-      actual: "",
+      forecast: auction ? `${auction.auctionDate} ${auction.securityTerm}；规模${auction.offeringAmount ? formatMacroValue(auction.offeringAmount, "亿美元", 1) : "待官方更新"}` : "下一场拍卖日程暂未抓到，继续使用阈值观察。",
+      previous: "前次投标倍数/尾差公布后进入数值面板。",
+      actual: auction?.bidToCover ? `投标倍数${auction.bidToCover}` : "",
       status: "观察",
       source: "U.S. Treasury auction schedule",
       sourceUrls: ["https://home.treasury.gov/policy-issues/financing-the-government/quarterly-refunding", "https://www.treasurydirect.gov/auctions/upcoming/"],
+      dataQuality: auction ? "delayed" : "threshold_only",
+      numericSignal: auction ? "等待拍卖结果" : "阈值参考",
+      updatedAt,
+      metrics: [
+        macroMetric({ key: "nextAuctionAmount", label: "下一场规模", value: auction?.offeringAmount ?? "待官方更新", unit: "亿美元", previousMetric: priorMetric(previousSnapshot, "treasury-auction-pressure", "nextAuctionAmount"), threshold: "长债大规模供给且收益率上行：风险升高", decimals: 1, updatedAt }),
+        macroMetric({ key: "bidToCover", label: "投标倍数", value: auction?.bidToCover ?? "待公布", unit: "", previousMetric: priorMetric(previousSnapshot, "treasury-auction-pressure", "bidToCover"), threshold: "低于近6次均值：偏利空BTC", decimals: 2, updatedAt }),
+        macroMetric({ key: "tail", label: "尾差", value: "待公布", unit: "bp", previousMetric: priorMetric(previousSnapshot, "treasury-auction-pressure", "tail"), threshold: "尾差 > +1bp：偏利空BTC", updatedAt }),
+      ],
+      thresholds: ["尾差 > +1bp：偏利空", "投标倍数低于近6次均值：偏利空", "拍卖需求强且收益率回落：偏利多"],
       btcDirection: "方向规则：拍卖需求强、收益率回落偏利多BTC；拍卖需求弱、收益率上行偏利空BTC。",
     },
     {
+      id: "dxy-yield-linkage",
       title: "美元指数与美债收益率联动观察",
       country: "US",
       category: "Dollar and Yields",
@@ -1657,20 +1863,50 @@ function marketMacroSignalEvents(now) {
       scheduledAt: null,
       updateFrequency: "实时观察",
       impact: "中高",
-      forecast: "免费模式先作为规则源；后续可接FRED或市场数据API自动量化。",
-      previous: "DXY和10年美债收益率同涨，通常压制BTC；同跌，通常利好BTC。",
-      actual: "",
+      forecast: "观察DXY与10年美债收益率是否同向触发临界值。",
+      previous: dxy.previous && tnxPrevYield ? `DXY ${dxy.previous.toFixed(2)}；10年美债 ${tnxPrevYield.toFixed(2)}%` : "前值建立中",
+      actual: dxy.latest && tnxYield ? `DXY ${dxy.latest.toFixed(2)}；10年美债 ${tnxYield.toFixed(2)}%` : "",
       status: "观察",
-      source: "FRED / Treasury / market proxy",
+      source: "Yahoo Finance market proxy / Treasury",
       sourceUrls: ["https://fred.stlouisfed.org/series/DGS10", "https://home.treasury.gov/resource-center/data-chart-center/interest-rates"],
-      btcDirection: "方向规则：美元和美债收益率同步走强偏利空BTC；同步走弱偏利多BTC；背离时优先看BTC资金费率和ETF流向。",
+      dataQuality: dxy.latest && tnxYield ? "delayed" : "unavailable",
+      numericSignal: dollarYieldSignal,
+      updatedAt,
+      metrics: [
+        macroMetric({ key: "dxy", label: "DXY", value: dxy.latest ?? "行情源不可用", unit: "", previousMetric: priorMetric(previousSnapshot, "dxy-yield-linkage", "dxy"), threshold: "单日 +0.5% 且10Y +8bp：偏利空BTC", decimals: 2, updatedAt }),
+        macroMetric({ key: "dxyChange", label: "DXY日变化", value: dxyChangePct ?? "行情源不可用", unit: "%", previousMetric: priorMetric(previousSnapshot, "dxy-yield-linkage", "dxyChange"), threshold: "+0.5% / -0.5%", decimals: 2, updatedAt }),
+        macroMetric({ key: "us10y", label: "10年美债", value: tnxYield ?? "行情源不可用", unit: "%", previousMetric: priorMetric(previousSnapshot, "dxy-yield-linkage", "us10y"), threshold: "单日 +8bp 偏利空，-8bp 偏利多", decimals: 2, updatedAt }),
+        macroMetric({ key: "us10yChange", label: "10Y变化", value: tnxChangeBp ?? "行情源不可用", unit: "bp", previousMetric: priorMetric(previousSnapshot, "dxy-yield-linkage", "us10yChange"), threshold: "+8bp / -8bp", decimals: 1, updatedAt }),
+      ],
+      thresholds: ["DXY +0.5% 且10年美债 +8bp：偏利空", "DXY -0.5% 且10年美债 -8bp：偏利多"],
+      btcDirection: dollarYieldSignal,
     },
   ];
 }
 
-function cryptoFlowEvents(now) {
+async function cryptoFlowEvents(now, env, previousSnapshot) {
+  const updatedAt = now.toISOString();
+  const [etf, stablecoins] = await Promise.all([
+    btcEtfFlowMetric(),
+    stablecoinSupplyMetric(),
+  ]);
+  const etfSignal = etf?.threeDay >= 500000000
+    ? "偏利多BTC：ETF三日净流入超过5亿美元。"
+    : etf?.threeDay <= -300000000
+      ? "偏利空BTC：ETF三日净流出超过3亿美元。"
+      : etf
+        ? "中性：ETF三日流量未触发关键临界值。"
+        : "数据源不可用：等待公开ETF流量源恢复。";
+  const stableSignal = stablecoins?.sevenDayPct >= 0.5
+    ? "偏利多BTC：稳定币供应7日扩张超过0.5%。"
+    : stablecoins?.sevenDayPct <= -0.5
+      ? "偏利空BTC：稳定币供应7日收缩超过0.5%。"
+      : stablecoins
+        ? "中性：稳定币供应变化未触发关键临界值。"
+        : "数据源不可用：等待DefiLlama恢复。";
   return [
     {
+      id: "btc-etf-flow",
       title: "美国现货BTC ETF资金流观察",
       country: "US",
       category: "BTC ETF Flow",
@@ -1678,15 +1914,24 @@ function cryptoFlowEvents(now) {
       scheduledAt: null,
       updateFrequency: "美股收盘后/资金流源更新后",
       impact: "高",
-      forecast: "免费模式暂未接入逐只ETF实时净流入；重点看连续净流入/净流出是否改变现货买盘。",
-      previous: "连续净流入通常增强现货买盘；连续净流出通常削弱反弹。",
-      actual: "",
+      forecast: "观察最近一日和三日合计净流入/净流出。",
+      previous: etf?.previous !== null && etf?.previous !== undefined ? formatMacroValue(etf.previous, "亿美元", 2) : "前值建立中",
+      actual: etf?.latest !== null && etf?.latest !== undefined ? formatMacroValue(etf.latest, "亿美元", 2) : "",
       status: "观察",
       source: "ETF公开流量聚合源",
       sourceUrls: ["https://farside.co.uk/btc/"],
-      btcDirection: "方向规则：ETF连续净流入偏利多BTC；连续净流出偏利空BTC；单日小幅波动中性。",
+      dataQuality: etf ? "delayed" : "unavailable",
+      numericSignal: etfSignal,
+      updatedAt,
+      metrics: [
+        macroMetric({ key: "latestNetFlow", label: "最近一日净流", value: etf?.latest ?? "资金流源不可用", unit: "亿美元", previousMetric: priorMetric(previousSnapshot, "btc-etf-flow", "latestNetFlow"), threshold: "单日大额净流入增强现货买盘", decimals: 2, updatedAt }),
+        macroMetric({ key: "threeDayNetFlow", label: "3日合计", value: etf?.threeDay ?? "资金流源不可用", unit: "亿美元", previousMetric: priorMetric(previousSnapshot, "btc-etf-flow", "threeDayNetFlow"), threshold: "> +5亿美元偏利多；< -3亿美元偏利空", decimals: 2, updatedAt }),
+      ],
+      thresholds: ["3日净流入 > +5亿美元：偏利多", "3日净流出 < -3亿美元：偏利空"],
+      btcDirection: etfSignal,
     },
     {
+      id: "stablecoin-liquidity",
       title: "稳定币流动性与交易所资金观察",
       country: "Global",
       category: "Stablecoin Liquidity",
@@ -1694,13 +1939,22 @@ function cryptoFlowEvents(now) {
       scheduledAt: null,
       updateFrequency: "每日观察",
       impact: "中高",
-      forecast: "免费模式先使用规则源；后续可接DefiLlama稳定币供应、交易所净流入等免费接口。",
-      previous: "稳定币供应扩张和交易所买盘增强通常支撑BTC；稳定币收缩代表场内流动性偏紧。",
-      actual: "",
+      forecast: "观察稳定币总供应和7日变化。",
+      previous: "前值由上一轮Worker快照保存；DefiLlama也提供1日/7日供应对比。",
+      actual: stablecoins?.current ? formatMacroValue(stablecoins.current, "十亿美元", 2) : "",
       status: "观察",
       source: "DefiLlama stablecoins / exchange flow proxy",
       sourceUrls: ["https://defillama.com/stablecoins"],
-      btcDirection: "方向规则：稳定币供应扩张偏利多BTC；供应收缩或交易所抛压增强偏利空BTC。",
+      dataQuality: stablecoins ? "delayed" : "unavailable",
+      numericSignal: stableSignal,
+      updatedAt,
+      metrics: [
+        macroMetric({ key: "stablecoinSupply", label: "稳定币总供应", value: stablecoins?.current ?? "DefiLlama不可用", unit: "十亿美元", previousMetric: priorMetric(previousSnapshot, "stablecoin-liquidity", "stablecoinSupply"), threshold: "供应扩张支撑风险偏好", decimals: 2, updatedAt }),
+        macroMetric({ key: "stablecoin1d", label: "1日变化", value: stablecoins?.oneDayPct ?? "DefiLlama不可用", unit: "%", previousMetric: priorMetric(previousSnapshot, "stablecoin-liquidity", "stablecoin1d"), threshold: "+0.2% / -0.2%", decimals: 2, updatedAt }),
+        macroMetric({ key: "stablecoin7d", label: "7日变化", value: stablecoins?.sevenDayPct ?? "DefiLlama不可用", unit: "%", previousMetric: priorMetric(previousSnapshot, "stablecoin-liquidity", "stablecoin7d"), threshold: "> +0.5%偏利多；< -0.5%偏利空", decimals: 2, updatedAt }),
+      ],
+      thresholds: ["7日供应 +0.5%以上：偏利多", "7日供应 -0.5%以上：偏利空"],
+      btcDirection: stableSignal,
     },
   ];
 }
@@ -1744,12 +1998,16 @@ async function macroBrief(request, env) {
   } else {
     warnings.push("当前使用免费官方源；精确一致预期和全量实际值覆盖有限");
   }
+  const previousObservationSnapshot = await readMacroObservationSnapshot(env);
   const officialEvents = officialMacroEvents(now);
   const cryptoPolicyEvents = policyCryptoEvents(now);
-  const rateAndLiquidityEvents = marketMacroSignalEvents(now);
-  const cryptoFlowSignalEvents = cryptoFlowEvents(now);
+  const [rateAndLiquidityEvents, cryptoFlowSignalEvents] = await Promise.all([
+    marketMacroSignalEvents(now, env, previousObservationSnapshot),
+    cryptoFlowEvents(now, env, previousObservationSnapshot),
+  ]);
   if (officialEvents.length || cryptoPolicyEvents.length || rateAndLiquidityEvents.length || cryptoFlowSignalEvents.length) sources.push(FREE_MACRO_SOURCE);
   const observationEvents = [...rateAndLiquidityEvents, ...cryptoFlowSignalEvents];
+  await writeMacroObservationSnapshot(env, observationEvents);
   const combined = dedupeMacroEvents([...events, ...officialEvents, ...cryptoPolicyEvents]);
   const upcomingEvents = combined.filter((event) => {
     const t = new Date(event.scheduledAt);
